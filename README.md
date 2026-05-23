@@ -17,8 +17,9 @@ The architectural distinction: a hierarchical **Planner / Executor / Evaluator**
 In active development. Currently:
 
 - ✅ Architecture designed (hierarchical agent + persistent state + ARIA-tree extraction + vision-grounded verification)
-- ✅ Capability probe written; partial verification against Qwen3.5-4B complete
-- ⏳ **M1 — extension skeleton + Ollama wiring — next**
+- ✅ Capability probe written and verified against Qwen3.5-4B on real hardware
+- ✅ **M1 — extension skeleton + Ollama wiring + streaming chat in side panel** (this commit)
+- ⏳ **M2 — hierarchical agent loop with mock tools — next**
 
 ## Hardware
 
@@ -31,7 +32,36 @@ In active development. Currently:
 
 Tested target: Linux + NVIDIA Quadro P2200 (5 GB) + 32 GB DDR4 → ~20 tok/s.
 
-## Quick start — run the capability probe
+## Install the extension (M1)
+
+The extension lives in [`extension/`](extension/). It's a Vite + React + TypeScript MV3 project built with [@crxjs/vite-plugin](https://crxjs.dev/vite-plugin).
+
+```bash
+cd extension
+npm install
+npm run dev          # dev build with HMR, watches src/
+# - or -
+npm run build        # one-shot production build into extension/dist/
+```
+
+Then in Chrome:
+
+1. Navigate to `chrome://extensions`
+2. Toggle **Developer mode** (top right)
+3. Click **Load unpacked**
+4. Select either `extension/dist/` (after `npm run build`) or the dev output directory printed by `npm run dev`
+
+Click the Polaris toolbar icon to open the side panel. The first time:
+
+1. Click the ⚙ gear in the top-right of the panel
+2. Confirm the **Ollama URL** (defaults to `http://localhost:11434`; set it to your Linux box if remote)
+3. Click **Test connection** — you should see a green ✓ and a model count
+4. Pick a **Model** from the autocomplete (defaults to `qwen3.5:4b`)
+5. Type a message and hit Enter — tokens stream in as the model generates
+
+The "Goal" field is the persistent anchor that the M2 agent loop will be locked to. In M1 it's just included in the system prompt for the current chat.
+
+## Run the capability probe
 
 Verifies your local Qwen3.5-4B has everything Polaris needs.
 
