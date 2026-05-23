@@ -494,7 +494,7 @@ def t_needle(p: Probe, depths_k: list) -> None:
 
 def t_embedding(p: Probe) -> None:
     p.log("\n=== embeddings (mxbai-embed-large) ===")
-    candidates = ["mxbai-embed-large:335m", "mxbai-embed-large", "nomic-embed-text"]
+    candidates = ["mxbai-embed-large:335m", "mxbai-embed-large", "mxbai-embed-large:latest", "nomic-embed-text"]
     chosen = None
     try:
         with urllib.request.urlopen(p.base + "/api/tags", timeout=10) as r:

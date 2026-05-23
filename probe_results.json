@@ -1,0 +1,381 @@
+{
+  "model": "qwen3.5:4b",
+  "base_url": "http://localhost:11434",
+  "started_at": 1779564816.962241,
+  "host": "Linux appusai-ThinkStation-P330 6.17.0-29-generic #29~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon May 11 10:30:58 UTC 2 x86_64 x86_64 x86_64 GNU/Linux",
+  "tests": {
+    "preflight": {
+      "ok": true,
+      "models_available": [
+        "mxbai-embed-large:latest",
+        "qwen36-cpu:latest",
+        "qwen36-agent:latest",
+        "qwen3.6:35b-a3b",
+        "thinker-qwen35-calc-physics-v1:latest",
+        "thinker-qwen35-calc:latest",
+        "qwen3.5:4b"
+      ],
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "qwen35",
+        "families": [
+          "qwen35"
+        ],
+        "parameter_size": "4.7B",
+        "quantization_level": "Q4_K_M"
+      },
+      "arch": "qwen35",
+      "context_length": 262144
+    },
+    "chat_latency": {
+      "samples": [
+        {
+          "ok": true,
+          "wall": 3.49,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 36.95,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 0.36,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 38.79,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 0.34,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 38.58,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 0.34,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 38.1,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 0.35,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 39.23,
+          "content": "pong"
+        }
+      ],
+      "avg_tps": 38.33
+    },
+    "tool_call": {
+      "ok": true,
+      "n_calls": 1,
+      "first": {
+        "id": "call_nu40p9o8",
+        "function": {
+          "index": 0,
+          "name": "get_current_weather",
+          "arguments": {
+            "city": "Tokyo",
+            "unit": "celsius"
+          }
+        }
+      }
+    },
+    "thinking_toggle": {
+      "on": {
+        "thinking_len": 861,
+        "content": "391",
+        "gen_tokens": 402
+      },
+      "off": {
+        "thinking_len": 0,
+        "content": "391",
+        "gen_tokens": 4
+      },
+      "supported": true
+    },
+    "json_string_mode": {
+      "n": 10,
+      "successes": 10,
+      "rate": 1.0,
+      "parses": [
+        {
+          "ok": true,
+          "obj": {
+            "product": "GlowBeam Z-900 Smart Light",
+            "price_usd": 299.99,
+            "in_stock": true,
+            "rating": 4.7
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "QuantumLeap X1 Pro",
+            "price_usd": 999.99,
+            "in_stock": true,
+            "rating": 4.8
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "HyperGlide Quantum X1",
+            "price_usd": 299.99,
+            "in_stock": true,
+            "rating": 4.8
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "GlowBerry Wireless Earbuds",
+            "price_usd": 89.99,
+            "in_stock": true,
+            "rating": 4.5
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "QuantumFlux X1",
+            "price_usd": 2999.99,
+            "in_stock": true,
+            "rating": 4.8
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "QuantumLeak 3000X",
+            "price_usd": 299.99,
+            "in_stock": false,
+            "rating": 3.5
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "Quantum SizzleBurger",
+            "price_usd": 8.99,
+            "in_stock": true,
+            "rating": 4.8
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "Quantum Leap X1 Smartwatch",
+            "price_usd": 299.99,
+            "in_stock": true,
+            "rating": 4.5
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "HyperGlide SmartDrone X1",
+            "price_usd": 299.99,
+            "in_stock": true,
+            "rating": 4.5
+          }
+        },
+        {
+          "ok": true,
+          "obj": {
+            "product": "QuantumZapper X1",
+            "price_usd": 2499.99,
+            "in_stock": true,
+            "rating": 4.8
+          }
+        }
+      ]
+    },
+    "json_schema_mode": {
+      "n": 3,
+      "successes": 0,
+      "parses": [
+        {
+          "ok": false,
+          "err": "Expecting value: line 1 column 1 (char 0)",
+          "raw": "Here is a fake product listing generated to match a standard e-commerce schema:\n\n```json\n{\n  \"product_id\": \"P-9982-XYZ\",\n  \"sku\": \"GAM-2024-PRO-01\",\n  \"title\": \"LuminaX Prime 4K Action Camera with Hyp"
+        },
+        {
+          "ok": false,
+          "err": "Expecting value: line 1 column 1 (char 0)",
+          "raw": "**Product Title:**  \n**Ultra-Sonic WhisperMate\u2122 X1 | Noise-Canceling Bone Conduction Headphones with Live-Transcription AI & 40Hr Power**\n\n**Price:** $249.99  \n**Rating:** \u2b50\u2b50\u2b50\u2b50\u00bd (4.8/5)  \n**Brand:** *"
+        },
+        {
+          "ok": false,
+          "err": "Expecting value: line 1 column 1 (char 0)",
+          "raw": "**Product Listing:**\n\n**Title:**  \nEcoGlide\u2122 Smart Home Robot Vacuum with Auto-Empty Dock & AI obstacle Avoidance\n\n**Price:**  \n$299.99\n\n**Rating:** \u2b50\u2b50\u2b50\u2b50\u2606 (4.7/5)\n\n**Product Description:**  \nMeet the "
+        }
+      ]
+    },
+    "tool_call_structured": {
+      "n": 5,
+      "successes": 4,
+      "rate": 0.8,
+      "parses": [
+        {
+          "ok": true,
+          "call": {
+            "id": "call_gzf1igiz",
+            "function": {
+              "index": 0,
+              "name": "report_product",
+              "arguments": {
+                "product": "Quantum Quill",
+                "price_usd": 499.99,
+                "in_stock": true,
+                "rating": 4.5
+              }
+            }
+          }
+        },
+        {
+          "ok": false,
+          "call": null
+        },
+        {
+          "ok": true,
+          "call": {
+            "id": "call_dcj0w1vw",
+            "function": {
+              "index": 0,
+              "name": "report_product",
+              "arguments": {
+                "product": "Anti-Gravity Coffee Mug",
+                "price_usd": 29.99,
+                "in_stock": true,
+                "rating": 4.5
+              }
+            }
+          }
+        },
+        {
+          "ok": true,
+          "call": {
+            "id": "call_h2s2uci3",
+            "function": {
+              "index": 0,
+              "name": "report_product",
+              "arguments": {
+                "product": "Cloud-Infused Time Capsule",
+                "price_usd": 299.99,
+                "in_stock": true,
+                "rating": 4.8
+              }
+            }
+          }
+        },
+        {
+          "ok": true,
+          "call": {
+            "id": "call_vvhy0v2i",
+            "function": {
+              "index": 0,
+              "name": "report_product",
+              "arguments": {
+                "product": "CloudFluff 3000",
+                "price_usd": 159.99,
+                "in_stock": true,
+                "rating": 4.5
+              }
+            }
+          }
+        }
+      ]
+    },
+    "streaming": {
+      "ok": true,
+      "ttft_s": 0.28,
+      "total_s": 0.76,
+      "chunks": 6,
+      "text": "1\n2\n3\n4\n5"
+    },
+    "multiturn": {
+      "ok": true,
+      "final": "Teal. Mochi."
+    },
+    "vision_sizes": {
+      "src": "/home/appusai/Documents/Projects/Polaris/docs/ollama-qwen35-page.png",
+      "resize_tool": "convert",
+      "results": [
+        {
+          "size": "400px",
+          "kb": 18.3,
+          "wall_s": 1.1,
+          "ok": false,
+          "reply": "Ampere A100"
+        },
+        {
+          "size": "800px",
+          "kb": 50.6,
+          "wall_s": 1.2,
+          "ok": false,
+          "reply": "Oren2.2"
+        },
+        {
+          "size": "1600px",
+          "kb": 143.2,
+          "wall_s": 3.7,
+          "ok": true,
+          "reply": "qwen3.5-4b"
+        }
+      ]
+    },
+    "embedding": {
+      "ok": true,
+      "model": "mxbai-embed-large:latest",
+      "dims": 1024,
+      "wall_s": 2.93
+    },
+    "needle": {
+      "4k": {
+        "ok": true,
+        "wall_s": 14.5,
+        "prompt_tokens": 3658,
+        "gen_tokens": 9,
+        "reply": "BLUE-DOLPHIN-42"
+      },
+      "16k": {
+        "ok": true,
+        "wall_s": 54.7,
+        "prompt_tokens": 14609,
+        "gen_tokens": 9,
+        "reply": "BLUE-DOLPHIN-42"
+      },
+      "32k": {
+        "ok": true,
+        "wall_s": 129.8,
+        "prompt_tokens": 29158,
+        "gen_tokens": 9,
+        "reply": "BLUE-DOLPHIN-42"
+      },
+      "64k": {
+        "ok": true,
+        "wall_s": 372.1,
+        "prompt_tokens": 58309,
+        "gen_tokens": 9,
+        "reply": "BLUE-DOLPHIN-42"
+      },
+      "128k": {
+        "ok": true,
+        "wall_s": 1089.4,
+        "prompt_tokens": 116558,
+        "gen_tokens": 9,
+        "reply": "BLUE-DOLPHIN-42"
+      }
+    }
+  },
+  "finished_at": 1779566660.8069203,
+  "wall_total_s": 1843.8
+}
