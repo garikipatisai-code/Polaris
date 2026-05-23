@@ -1,0 +1,39 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Node / future extension build
+node_modules/
+dist/
+build/
+.vite/
+.parcel-cache/
+
+# Polaris runtime outputs
+probe_results*.json
+probe*.log
+_probe/
+_vision_temp/
+_slices/
+
+# Secrets / local config
+.env
+.env.local
+*.local
