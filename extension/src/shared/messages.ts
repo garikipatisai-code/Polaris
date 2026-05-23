@@ -34,6 +34,7 @@ export type ResponseMessage =
   | { type: 'chat.chunk'; content: string }
   | { type: 'chat.complete'; stats?: ChatStats }
   | { type: 'chat.error'; message: string }
+  | { type: 'chat.status'; status: 'warming'; message: string }
   | { type: 'settings.value'; settings: Settings }
   | { type: 'ollama.ping.result'; ok: boolean; error?: string; models?: string[] };
 

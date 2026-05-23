@@ -65,7 +65,8 @@ export interface PingResult {
 export class OllamaClient {
   constructor(public baseUrl: string) {}
 
-  private url(path: string): string {
+  /** Build a full URL for a given Ollama API path. */
+  url(path: string): string {
     return this.baseUrl.replace(/\/$/, '') + path;
   }
 

@@ -54,6 +54,11 @@ export default function App() {
           });
           setIsStreaming(false);
           break;
+        case 'chat.status':
+          if (msg.status === 'warming') {
+            setStreaming((prev) => prev + '\n[Model loading… ' + msg.message + ']');
+          }
+          break;
         case 'settings.value':
           setSettings(msg.settings);
           break;

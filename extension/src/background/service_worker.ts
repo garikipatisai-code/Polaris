@@ -96,28 +96,95 @@ async function handleChat(
   let genTokens = 0;
 
   try {
-    for await (const chunk of client.chatStream({
+    // Attempt the chat stream; on 403 the model needs to be loaded first.
+    let stream = client.chatStream({
       model: settings.model,
       messages,
       think: settings.enableThinking,
       signal: currentAbort.signal,
-    })) {
-      const content = chunk.message?.content;
-      if (content) send(port, { type: 'chat.chunk', content });
-      if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
-      if (chunk.eval_count) genTokens = chunk.eval_count;
-      if (chunk.done) break;
-    }
-    const wallMs = performance.now() - start;
-    const tokPerSec = genTokens && wallMs > 0 ? genTokens / (wallMs / 1000) : undefined;
-    send(port, {
-      type: 'chat.complete',
-      stats: { promptTokens, genTokens, tokPerSec, wallMs },
     });
+
+    // Poll once to detect a 403 early — the generator hasn't yielded yet.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _chunk of stream) {
+      // If we get here, streaming started normally — no 403.
+      // Note: the real iteration resumes below using the same client call.
+      break;
+    }
   } catch (e) {
-    if ((e as Error).name === 'AbortError') return;
-    send(port, { type: 'chat.error', message: (e as Error).message });
-  } finally {
+    const err = e as Error;
+    // 403 means model not loaded — trigger a background load then retry.
+    if (err.message.includes('403')) {
+      try {
+        send(port, { type: 'chat.status', status: 'warming', message: 'Loading model…' });
+        await loadModel(client, settings.model, currentAbort.signal);
+      } catch (loadErr) {
+        send(port, { type: 'chat.error', message: `Model load failed: ${(loadErr as Error).message}` });
+        return;
+      }
+      // Retry once — model is now in memory.
+      const retryStart = performance.now();
+      for await (const chunk of client.chatStream({
+        model: settings.model,
+        messages,
+        think: settings.enableThinking,
+        signal: currentAbort.signal,
+      })) {
+        const content = chunk.message?.content;
+        if (content) send(port, { type: 'chat.chunk', content });
+        if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
+        if (chunk.eval_count) genTokens = chunk.eval_count;
+        if (chunk.done) break;
+      }
+      const wallMs = performance.now() - retryStart;
+      const tokPerSec = genTokens && wallMs > 0 ? genTokens / (wallMs / 1000) : undefined;
+      send(port, { type: 'chat.complete', stats: { promptTokens, genTokens, tokPerSec, wallMs } });
+      currentAbort = null;
+      return;
+    }
+    // Non-403 error.
+    if (err.name === 'AbortError') return;
+    send(port, { type: 'chat.error', message: err.message });
     currentAbort = null;
+    return;
+  }
+
+  // Normal streaming path (no 403 on first attempt).
+  // Re-create the stream since we consumed one iteration in the probe above.
+  // We re-use messages since no tokens were generated yet.
+  for await (const chunk of client.chatStream({
+    model: settings.model,
+    messages,
+    think: settings.enableThinking,
+    signal: currentAbort.signal,
+  })) {
+    const content = chunk.message?.content;
+    if (content) send(port, { type: 'chat.chunk', content });
+    if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
+    if (chunk.eval_count) genTokens = chunk.eval_count;
+    if (chunk.done) break;
+  }
+  const wallMs = performance.now() - start;
+  const tokPerSec = genTokens && wallMs > 0 ? genTokens / (wallMs / 1000) : undefined;
+  send(port, { type: 'chat.complete', stats: { promptTokens, genTokens, tokPerSec, wallMs } });
+  currentAbort = null;
+}
+
+async function loadModel(
+  client: OllamaClient,
+  model: string,
+  signal: AbortSignal,
+): Promise<void> {
+  // Use /api/generate with keep_alive to force model into memory.
+  // Ollama loads the model on first request and keeps it resident per keep_alive.
+  const res = await fetch(client.url('/api/generate'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, prompt: ' ', stream: false, keep_alive: -1 }),
+    signal,
+  });
+  if (!res.ok) {
+    const detail = res.text().catch(() => '');
+    throw new Error(`load HTTP ${res.status}: ${detail}`);
   }
 }
