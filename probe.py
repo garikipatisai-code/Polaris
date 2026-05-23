@@ -314,35 +314,61 @@ def t_tool_call_structured(p: Probe, n: int = 5) -> None:
 
 def t_vision_sizes(p: Probe) -> None:
     p.log("\n=== vision: scaling image size ===")
-    # Try to find or create test images using sips (macOS) or PIL fallback
+    # Find a reference image: prefer one shipped in the repo, then common locations
+    script_dir = Path(__file__).resolve().parent
     src_candidates = [
-        "/Users/saikrishna/Documents/Spike/Personal/Browser/_slices/slice_07.png",
-        "/Users/saikrishna/Documents/Spike/Personal/Browser/qwen3.5:4b.png",
-        os.path.expanduser("~/Downloads/qwen3.5:4b.png"),
-        os.path.expanduser("~/Desktop/qwen3.5:4b.png"),
+        script_dir / "docs" / "ollama-qwen35-page.png",
+        Path.cwd() / "docs" / "ollama-qwen35-page.png",
+        Path.cwd() / "ollama-qwen35-page.png",
+        Path("/Users/saikrishna/Documents/Spike/Personal/Browser/_slices/slice_07.png"),
+        Path("/Users/saikrishna/Documents/Spike/Personal/Browser/qwen3.5:4b.png"),
+        Path(os.path.expanduser("~/Downloads/qwen3.5:4b.png")),
+        Path(os.path.expanduser("~/Desktop/qwen3.5:4b.png")),
     ]
-    src = next((c for c in src_candidates if Path(c).exists()), None)
+    src = next((str(c) for c in src_candidates if c.exists()), None)
     if src is None:
         p.log("  no test image found; skipping vision tests")
         _record(p, "vision_sizes", {"skipped": True, "reason": "no source image"})
         return
-    out_dir = p.out_path.parent / "_vision_temp"
-    out_dir.mkdir(exist_ok=True)
-    sizes_px = [400, 800, 1600]
-    results = []
-    for px in sizes_px:
-        tmp = out_dir / f"v_{px}.png"
+    p.log(f"  source image: {src}")
+
+    # Pick whichever image resizer is on PATH; if none, just use the original
+    resize_tool = None
+    for cand in ["sips", "convert", "magick"]:
         try:
             subprocess.run(
-                ["sips", "-Z", str(px), src, "--out", str(tmp)],
-                capture_output=True, check=False,
+                [cand, "--help" if cand == "sips" else "-version"],
+                capture_output=True, timeout=5,
             )
-        except FileNotFoundError:
-            results.append({"px": px, "skipped": True, "reason": "sips not available"})
+            resize_tool = cand
+            break
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
-        if not tmp.exists():
-            results.append({"px": px, "skipped": True, "reason": "sips failed"})
-            continue
+    p.log(f"  resizer: {resize_tool or 'none (using original image at full size)'}")
+
+    out_dir = p.out_path.parent / "_vision_temp"
+    out_dir.mkdir(exist_ok=True)
+    sizes_px = [400, 800, 1600] if resize_tool else [None]
+    results = []
+    for px in sizes_px:
+        if px is None:
+            tmp = Path(src)
+            label = "original"
+        else:
+            tmp = out_dir / f"v_{px}.png"
+            if resize_tool == "sips":
+                subprocess.run(["sips", "-Z", str(px), src, "--out", str(tmp)],
+                               capture_output=True, check=False)
+            elif resize_tool == "convert":
+                subprocess.run(["convert", src, "-resize", f"{px}x{px}>", str(tmp)],
+                               capture_output=True, check=False)
+            elif resize_tool == "magick":
+                subprocess.run(["magick", src, "-resize", f"{px}x{px}>", str(tmp)],
+                               capture_output=True, check=False)
+            if not tmp.exists():
+                results.append({"size": f"{px}px", "skipped": True, "reason": "resize failed"})
+                continue
+            label = f"{px}px"
         kb = tmp.stat().st_size / 1024
         b64 = base64.b64encode(tmp.read_bytes()).decode()
         start = time.time()
@@ -354,16 +380,16 @@ def t_vision_sizes(p: Probe) -> None:
         )
         wall = time.time() - start
         if "_http_error" in r or "_net_error" in r:
-            results.append({"px": px, "kb": round(kb, 1), "wall_s": round(wall, 1),
+            results.append({"size": label, "kb": round(kb, 1), "wall_s": round(wall, 1),
                             "ok": False, "err": r})
-            p.log(f"  {px}px ({kb:.0f} KB) wall={wall:.1f}s ERROR: {str(r)[:120]}")
+            p.log(f"  {label} ({kb:.0f} KB) wall={wall:.1f}s ERROR: {str(r)[:120]}")
             continue
         content = (r.get("message") or {}).get("content", "")
         ok = "qwen3.5" in content.lower() or "qwen 3.5" in content.lower()
-        results.append({"px": px, "kb": round(kb, 1), "wall_s": round(wall, 1),
+        results.append({"size": label, "kb": round(kb, 1), "wall_s": round(wall, 1),
                         "ok": ok, "reply": content[:200]})
-        p.log(f"  {px}px ({kb:.0f} KB) wall={wall:.1f}s ok={ok} reply={content[:80]!r}")
-    _record(p, "vision_sizes", {"src": src, "results": results})
+        p.log(f"  {label} ({kb:.0f} KB) wall={wall:.1f}s ok={ok} reply={content[:80]!r}")
+    _record(p, "vision_sizes", {"src": src, "resize_tool": resize_tool, "results": results})
 
 def t_streaming(p: Probe) -> None:
     p.log("\n=== streaming SSE ===")
