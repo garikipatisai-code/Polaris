@@ -132,6 +132,7 @@ export async function startTask(goalText: string): Promise<AgentStateHot> {
       recentOutcomes: [],
       stepsWithoutProgress: 0,
       lastFindingsCount: 0,
+      totalReplans: 0,
       trips: [],
     },
     scratchpadRef: { count: 0, tokens: 0 },

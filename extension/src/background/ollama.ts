@@ -1,6 +1,8 @@
 // Typed Ollama HTTP client for the background service worker.
 // Streams NDJSON chunks from /api/chat. Stdlib fetch only — no deps.
 
+import { log } from '../agent/log';
+
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface ChatMessage {
@@ -133,6 +135,17 @@ export class OllamaClient {
     if (opts.think !== undefined) body.think = opts.think;
     if (opts.options) body.options = opts.options;
 
+    const promptChars = opts.messages.reduce((a, m) => a + (m.content?.length ?? 0), 0);
+    log('info', 'ollama', 'chatOnce →', {
+      model: opts.model,
+      messages: opts.messages.length,
+      promptChars,
+      think: opts.think,
+      format: typeof opts.format === 'string' ? opts.format : opts.format ? 'schema' : undefined,
+      tools: opts.tools?.length ?? 0,
+    });
+    const start = performance.now();
+
     const res = await fetch(this.url('/api/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -141,9 +154,28 @@ export class OllamaClient {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
+      log('error', 'ollama', `chatOnce ✗ HTTP ${res.status}`, {
+        status: res.status,
+        detail: detail.slice(0, 200),
+        wallMs: Math.round(performance.now() - start),
+      });
       throw new Error(`Ollama chat HTTP ${res.status}: ${detail.slice(0, 200)}`);
     }
-    return (await res.json()) as ChatChunk;
+    const data = (await res.json()) as ChatChunk;
+    const wallMs = Math.round(performance.now() - start);
+    log('info', 'ollama', 'chatOnce ✓', {
+      model: opts.model,
+      promptTokens: data.prompt_eval_count,
+      genTokens: data.eval_count,
+      thinkingChars: (data.message?.thinking ?? '').length,
+      contentChars: (data.message?.content ?? '').length,
+      toolCalls: data.message?.tool_calls?.length ?? 0,
+      wallMs,
+      tokPerSec: data.eval_count && wallMs > 0
+        ? Math.round((data.eval_count / (wallMs / 1000)) * 10) / 10
+        : undefined,
+    });
+    return data;
   }
 
   async embed(model: string, input: string | string[]): Promise<number[][]> {

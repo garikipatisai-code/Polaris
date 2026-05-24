@@ -1,17 +1,21 @@
 // Circuit breaker — wraps the Executor's tool dispatch with stuck-loop and
-// failure-rate guards. Trip signatures (M2.6 minimum):
+// failure-rate guards. Trip signatures:
 //
 //   1. Action repetition: same (toolName, canonical args) called ≥3
 //      consecutive times → replan
-//   2. No findings growth: ≥5 consecutive Executor turns without the
-//      findings count increasing → replan
-//   3. Fatal tool error: any ToolResult with fatal=true → abort
+//   2. Soft no-progress: ≥10 consecutive Executor turns without findings
+//      growth → replan. Note this is a coarse signal because findings only
+//      grow during compaction; we keep it as a long-window safety net rather
+//      than a tight loop guard.
+//   3. Total replans ≥ MAX_TOTAL_REPLANS → abort (prevents the planner ↔
+//      executor ping-pong that bit M2.6.1 testing).
+//   4. Fatal tool error: any ToolResult with fatal=true → abort
 //
-// State lives in AgentStateHot.breaker (persisted, so a SW restart sees
-// the same trip counters). The orchestrator threads breaker.evaluate()
-// after each Executor turn.
+// Counters are reset by the orchestrator on PLANNING entry so that a
+// successful replan starts the no-progress window from scratch.
 
 import type { AgentStateHot, BreakerState } from '../shared/agent_types';
+import { log } from './log';
 
 export interface PlannedAction {
   name: string;
@@ -24,7 +28,8 @@ export type BreakerResult =
   | { kind: 'abort'; reason: string };
 
 const MAX_REPEATS = 3;
-const NO_PROGRESS_THRESHOLD = 5;
+const NO_PROGRESS_THRESHOLD = 10;
+export const MAX_TOTAL_REPLANS = 3;
 const RECENT_OUTCOMES_WINDOW = 5;
 
 /** Stable canonical hash of (toolName, args). Sorts object keys for repeatability. */
@@ -48,6 +53,13 @@ function stableStringify(v: unknown): string {
  * or abort. Pure function — does not mutate state.
  */
 export function evaluate(state: AgentStateHot, lastAction?: PlannedAction): BreakerResult {
+  // 0. Hard cap on total replans for a task.
+  if (state.breaker.totalReplans >= MAX_TOTAL_REPLANS) {
+    return {
+      kind: 'abort',
+      reason: `replanned ${state.breaker.totalReplans} times — task appears unsolvable with current tools`,
+    };
+  }
   // 1. Action repetition.
   if (lastAction) {
     const h = actionHash(lastAction.name, lastAction.args);
@@ -59,14 +71,31 @@ export function evaluate(state: AgentStateHot, lastAction?: PlannedAction): Brea
       };
     }
   }
-  // 2. No findings growth over a window.
+  // 2. Long-window no-progress safety. The signal is coarse (findings only
+  // grow on compaction) so threshold is generous.
   if (state.breaker.stepsWithoutProgress >= NO_PROGRESS_THRESHOLD) {
     return {
       kind: 'replan',
-      reason: `no findings growth in last ${state.breaker.stepsWithoutProgress} turns — plan may be wrong or scope too narrow`,
+      reason: `no findings growth in last ${state.breaker.stepsWithoutProgress} turns — plan may be wrong`,
     };
   }
   return { kind: 'ok' };
+}
+
+/** Reset short-window counters that should not survive a replan boundary. */
+export function resetForReplan(state: BreakerState): BreakerState {
+  log('info', 'breaker', 'resetForReplan', {
+    fromStepsWithoutProgress: state.stepsWithoutProgress,
+    totalReplansBefore: state.totalReplans,
+  });
+  return {
+    ...state,
+    repeats: {},
+    stepsWithoutProgress: 0,
+    lastFindingsCount: 0,
+    recentOutcomes: [],
+    totalReplans: state.totalReplans + 1,
+  };
 }
 
 /**
@@ -112,6 +141,7 @@ export function recordAfter(
       recentOutcomes,
       stepsWithoutProgress,
       lastFindingsCount: currentFindingsCount,
+      totalReplans: state.breaker.totalReplans,
       trips: trips.slice(-5),
     },
     abortReason,

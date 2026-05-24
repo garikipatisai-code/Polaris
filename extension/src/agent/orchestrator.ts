@@ -26,6 +26,7 @@ import { runEvaluator } from './roles/evaluator';
 import { runCompactor } from './roles/compactor';
 import * as store from './state_store';
 import * as breaker from './circuit_breaker';
+import { log } from './log';
 import type {
   AgentStateHot,
   AgentEventType,
@@ -186,9 +187,36 @@ export class Orchestrator {
     isInitial: boolean,
     replanHint: string | undefined,
   ): Promise<AgentStateHot> {
-    await this.emit(state.taskId, 'role_start', { role: 'planner', isInitial, replanHint });
+    log('info', 'planner', isInitial ? 'initial planning' : 'replan', {
+      taskId: state.taskId,
+      replanHint,
+      planRevision: state.plan.revision,
+      totalReplans: state.breaker.totalReplans,
+    });
+
+    // On replan, reset short-window breaker counters so the new plan starts
+    // with a clean slate; bump the replan counter for max-replan tracking.
+    let prepared = state;
+    if (!isInitial) {
+      const resetBreaker = breaker.resetForReplan(state.breaker);
+      // If max replans now reached, abort instead of planning again.
+      if (resetBreaker.totalReplans > breaker.MAX_TOTAL_REPLANS) {
+        const aborted = await store.patchHot({ phase: 'ABORTED', breaker: resetBreaker });
+        await this.emit(aborted.taskId, 'breaker', {
+          action: 'abort',
+          reason: `exceeded ${breaker.MAX_TOTAL_REPLANS} replans — task appears unsolvable with available tools`,
+        });
+        await this.emit(aborted.taskId, 'error', {
+          error: `gave up after ${resetBreaker.totalReplans} replans`,
+        });
+        return aborted;
+      }
+      prepared = await store.patchHot({ breaker: resetBreaker });
+    }
+
+    await this.emit(prepared.taskId, 'role_start', { role: 'planner', isInitial, replanHint });
     const result = await runPlanner({
-      state,
+      state: prepared,
       registry: this.registry,
       client: this.client,
       model: this.model,
@@ -212,7 +240,7 @@ export class Orchestrator {
       return aborted;
     }
 
-    let after = state;
+    let after = prepared;
     if (isInitial && result.successCriteria && result.successCriteria.length > 0) {
       after = await store.appendSuccessCriteria(result.successCriteria);
     }

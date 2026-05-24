@@ -96,6 +96,8 @@ export interface BreakerState {
   stepsWithoutProgress: number;
   /** Findings count seen at the previous check; used to detect growth. */
   lastFindingsCount: number;
+  /** Total replans this task has gone through; aborts after MAX_TOTAL_REPLANS. */
+  totalReplans: number;
   /** last 5 trips for telemetry */
   trips: { at: number; reason: string; level?: 'nudge' | 'replan' | 'abort' }[];
 }

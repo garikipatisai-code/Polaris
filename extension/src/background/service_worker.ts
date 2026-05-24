@@ -10,6 +10,7 @@ import * as idb from '../agent/idb';
 import * as budget from '../agent/budget';
 import { ulid } from '../agent/ulid';
 import * as tools from '../agent/tools';
+import * as logModule from '../agent/log';
 import { Orchestrator } from '../agent/orchestrator';
 
 // Expose agent primitives on globalThis.polaris so the SW DevTools console
@@ -21,8 +22,12 @@ import { Orchestrator } from '../agent/orchestrator';
   budget,
   ulid,
   tools,
+  log: logModule.log,
+  logs: logModule.getLogs,
+  dumpLogs: logModule.dumpLogs,
+  clearLogs: logModule.clearLogs,
 };
-console.log('[polaris] state + tools primitives → globalThis.polaris');
+console.log('[polaris] state + tools primitives → globalThis.polaris (try polaris.dumpLogs())');
 
 // Open the side panel when the toolbar icon is clicked.
 chrome.sidePanel
