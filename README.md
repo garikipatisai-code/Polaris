@@ -61,6 +61,41 @@ Click the Polaris toolbar icon to open the side panel. The first time:
 
 The "Goal" field is the persistent anchor that the M2 agent loop will be locked to. In M1 it's just included in the system prompt for the current chat.
 
+## CORS setup (one-time, required)
+
+Ollama rejects requests from browser extensions by default (HTTP 403, because the `Origin: chrome-extension://...` header isn't on its allow-list). You need to set `OLLAMA_ORIGINS` once on the machine running Ollama.
+
+**If Ollama runs as a systemd service (typical Linux install):**
+
+```bash
+sudo systemctl edit ollama.service
+```
+
+Add these lines in the override editor:
+
+```ini
+[Service]
+Environment="OLLAMA_ORIGINS=chrome-extension://*"
+```
+
+Save, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+systemctl show ollama --property=Environment   # verify
+```
+
+**If you run Ollama in the foreground (e.g., dev / macOS):**
+
+```bash
+OLLAMA_ORIGINS="chrome-extension://*" ollama serve
+```
+
+**Verify from the extension:** open the ⚙ settings drawer in Polaris and click **Test connection**. You should see a green ✓ and a model count. If you see ✗ with a 403 hint, the env var didn't take — double-check the systemd override.
+
+You can also use a wider value like `OLLAMA_ORIGINS="*"` for testing, but pin it to `chrome-extension://*` in production to avoid exposing your local Ollama to arbitrary websites.
+
 ## Run the capability probe
 
 Verifies your local Qwen3.5-4B has everything Polaris needs.

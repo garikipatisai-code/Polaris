@@ -13,6 +13,10 @@ chrome.sidePanel
 // One in-flight chat at a time; abort cancels current generation.
 let currentAbort: AbortController | null = null;
 
+// Show "Loading model…" status if the first token doesn't arrive within this window.
+// Cold loads of qwen3.5:4b take ~3–5s on the target hardware.
+const WARMING_NOTICE_MS = 3000;
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== PORT_NAME) return;
 
@@ -71,6 +75,12 @@ function send(port: chrome.runtime.Port, msg: ResponseMessage): void {
   }
 }
 
+function systemPromptFor(goal?: string): string {
+  return goal
+    ? `You are Polaris, a focused local browser assistant. The user's current goal is: "${goal}". Stay grounded in that goal in every reply. Be concise.`
+    : 'You are Polaris, a focused local browser assistant. Be concise and useful.';
+}
+
 async function handleChat(
   port: chrome.runtime.Port,
   userText: string,
@@ -79,112 +89,82 @@ async function handleChat(
   const settings = await getSettings();
   const client = new OllamaClient(settings.ollamaBaseUrl);
 
-  const systemPrompt = goal
-    ? `You are Polaris, a focused local browser assistant. The user's current goal is: "${goal}". Stay grounded in that goal in every reply. Be concise.`
-    : 'You are Polaris, a focused local browser assistant. Be concise and useful.';
-
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', content: systemPromptFor(goal) },
     { role: 'user', content: userText },
   ];
 
   currentAbort?.abort();
   currentAbort = new AbortController();
+  const abortSignal = currentAbort.signal;
 
   const start = performance.now();
   let promptTokens = 0;
   let genTokens = 0;
+  let firstChunkSeen = false;
+
+  // If the first token hasn't arrived after WARMING_NOTICE_MS, surface a
+  // "Loading model…" status so the user doesn't think we hung.
+  const warmingTimer = setTimeout(() => {
+    if (!firstChunkSeen) {
+      send(port, {
+        type: 'chat.status',
+        status: 'warming',
+        message: 'Loading model into memory…',
+      });
+    }
+  }, WARMING_NOTICE_MS);
 
   try {
-    // Attempt the chat stream; on 403 the model needs to be loaded first.
-    let stream = client.chatStream({
+    for await (const chunk of client.chatStream({
       model: settings.model,
       messages,
       think: settings.enableThinking,
-      signal: currentAbort.signal,
+      signal: abortSignal,
+    })) {
+      if (!firstChunkSeen) {
+        firstChunkSeen = true;
+        clearTimeout(warmingTimer);
+      }
+      const content = chunk.message?.content;
+      if (content) send(port, { type: 'chat.chunk', content });
+      if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
+      if (chunk.eval_count) genTokens = chunk.eval_count;
+      if (chunk.done) break;
+    }
+    const wallMs = performance.now() - start;
+    const tokPerSec = genTokens && wallMs > 0 ? genTokens / (wallMs / 1000) : undefined;
+    send(port, {
+      type: 'chat.complete',
+      stats: { promptTokens, genTokens, tokPerSec, wallMs },
     });
-
-    // Poll once to detect a 403 early — the generator hasn't yielded yet.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    for await (const _chunk of stream) {
-      // If we get here, streaming started normally — no 403.
-      // Note: the real iteration resumes below using the same client call.
-      break;
-    }
   } catch (e) {
-    const err = e as Error;
-    // 403 means model not loaded — trigger a background load then retry.
-    if (err.message.includes('403')) {
-      try {
-        send(port, { type: 'chat.status', status: 'warming', message: 'Loading model…' });
-        await loadModel(client, settings.model, currentAbort.signal);
-      } catch (loadErr) {
-        send(port, { type: 'chat.error', message: `Model load failed: ${(loadErr as Error).message}` });
-        return;
-      }
-      // Retry once — model is now in memory.
-      const retryStart = performance.now();
-      for await (const chunk of client.chatStream({
-        model: settings.model,
-        messages,
-        think: settings.enableThinking,
-        signal: currentAbort.signal,
-      })) {
-        const content = chunk.message?.content;
-        if (content) send(port, { type: 'chat.chunk', content });
-        if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
-        if (chunk.eval_count) genTokens = chunk.eval_count;
-        if (chunk.done) break;
-      }
-      const wallMs = performance.now() - retryStart;
-      const tokPerSec = genTokens && wallMs > 0 ? genTokens / (wallMs / 1000) : undefined;
-      send(port, { type: 'chat.complete', stats: { promptTokens, genTokens, tokPerSec, wallMs } });
-      currentAbort = null;
-      return;
-    }
-    // Non-403 error.
-    if (err.name === 'AbortError') return;
-    send(port, { type: 'chat.error', message: err.message });
+    if ((e as Error).name === 'AbortError') return;
+    send(port, { type: 'chat.error', message: explainError(e as Error) });
+  } finally {
+    clearTimeout(warmingTimer);
     currentAbort = null;
-    return;
   }
-
-  // Normal streaming path (no 403 on first attempt).
-  // Re-create the stream since we consumed one iteration in the probe above.
-  // We re-use messages since no tokens were generated yet.
-  for await (const chunk of client.chatStream({
-    model: settings.model,
-    messages,
-    think: settings.enableThinking,
-    signal: currentAbort.signal,
-  })) {
-    const content = chunk.message?.content;
-    if (content) send(port, { type: 'chat.chunk', content });
-    if (chunk.prompt_eval_count) promptTokens = chunk.prompt_eval_count;
-    if (chunk.eval_count) genTokens = chunk.eval_count;
-    if (chunk.done) break;
-  }
-  const wallMs = performance.now() - start;
-  const tokPerSec = genTokens && wallMs > 0 ? genTokens / (wallMs / 1000) : undefined;
-  send(port, { type: 'chat.complete', stats: { promptTokens, genTokens, tokPerSec, wallMs } });
-  currentAbort = null;
 }
 
-async function loadModel(
-  client: OllamaClient,
-  model: string,
-  signal: AbortSignal,
-): Promise<void> {
-  // Use /api/generate with keep_alive to force model into memory.
-  // Ollama loads the model on first request and keeps it resident per keep_alive.
-  const res = await fetch(client.url('/api/generate'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, prompt: ' ', stream: false, keep_alive: -1 }),
-    signal,
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => 'no body');
-    throw new Error(`load HTTP ${res.status}: ${detail}`);
+function explainError(e: Error): string {
+  const msg = e.message;
+  // 403 from Ollama is almost always a CORS rejection — Origin header from
+  // chrome-extension://* isn't whitelisted server-side.
+  if (msg.includes('403')) {
+    return (
+      'Ollama rejected the request (HTTP 403). Most likely a CORS issue — ' +
+      'set OLLAMA_ORIGINS="chrome-extension://*" on the Ollama server. ' +
+      'See README.md "CORS setup" for details.'
+    );
   }
+  // Network failure when fetching localhost typically means Ollama isn't
+  // running, or the URL is wrong.
+  if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+    return (
+      'Could not reach Ollama. Check that the server is running and the ' +
+      'URL in Polaris settings is correct.'
+    );
+  }
+  return msg;
 }

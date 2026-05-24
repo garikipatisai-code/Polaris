@@ -69,43 +69,89 @@ in "Open questions" first.
 
 ## Current state — UPDATE THIS WHEN YOU FINISH WORK
 
-**Last touched:** 2026-05-23 (Mac, Claude Opus 4.7)
-**Last commit:** "M1: extension scaffold + Ollama streaming chat" (about to be pushed)
+**Last touched:** 2026-05-23 evening (Mac, Claude Opus 4.7)
+**Last commit pulled in:** Linux session's `ISSUES.md` + service-worker 403 retry
+**Local changes (uncommitted):** M1.1 cleanup — see "What's done" below
 **Current branch:** main
 
 ### What's done
 
 - `probe.py` — comprehensive capability probe; ran on Linux, all critical
   features verified (see [Hardware-specific notes](#hardware-specific-notes))
-- `extension/` — full M1 scaffold (Vite + React + TS + CRXJS, 14 files):
-  - background: typed Ollama client with NDJSON streaming, settings store,
-    SW that routes messages between side panel and Ollama
-  - sidepanel: chat UI with streaming tokens, goal banner, settings drawer
-    with connection test, light/dark via `prefers-color-scheme`
-- `docs/research-notes.md` — literature survey on long-horizon agentic loops
-- `docs/ollama-qwen35-page.png` — verified source for model spec
+- `extension/` — full M1 scaffold (Vite + React + TS + CRXJS, 14 files)
+- `docs/research-notes.md` — literature survey
+- `ISSUES.md` — all four M1 issues now marked resolved
+- **M1.1 cleanup (this session):**
+  - Rewrote `service_worker.ts`: removed the wasteful probe-then-restream
+    pattern; single `chatStream` call; soft-warming "Loading model…"
+    notice via 3 s timer instead of 403 detection; cleaner error
+    messages that point at README's CORS setup for 403, network errors,
+    etc. `loadModel()` helper deleted.
+  - `DEFAULT_SETTINGS.ollamaBaseUrl` reverted to `http://localhost:11434`
+    (canonical; users may still override to a proxy URL if they want).
+  - Added "CORS setup (one-time, required)" section to README explaining
+    `OLLAMA_ORIGINS="chrome-extension://*"` via systemd or foreground.
+  - Updated `ISSUES.md`: all four issues now resolved with notes.
+  - Added `scripts/browser_smoke.py` — CDP-driven test that launches
+    Chrome with the unpacked extension and verifies SW + Ollama fetch
+    + chat round-trip end-to-end. Stdlib only.
+  - `.gitignore` extended to exclude tsc composite build artifacts
+    (`*.tsbuildinfo`, generated `manifest.d.ts/.js`, `vite.config.d.ts/.js`).
+  - `npm install` succeeded (118 packages); `npm run build` clean (4 KB
+    SW bundle, 147 KB sidepanel bundle, no errors).
+
+### Browser test status (M1 + M1.1)
+
+**Cannot test from this Mac session — sandbox blocks Chrome from binding
+its singleton socket (`Failed to bind() .../SingletonSocket: Operation
+not permitted`) and from spawning a test Ollama on an alternative port
+(`bind: operation not permitted`).**
+
+Static verification done:
+- Build succeeds, no TS errors
+- SW bundle contains no stray `loadModel` / `probe` / `/api/generate`
+- Default URL `localhost:11434` confirmed in bundled sidepanel JS
+
+**User must run a real browser test before M2 starts.** Recipe:
+
+```bash
+# 1) Set CORS allow on Ollama (one time)
+launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"     # macOS
+# - or for Linux systemd:
+#   sudo systemctl edit ollama.service
+#   [Service]
+#   Environment="OLLAMA_ORIGINS=chrome-extension://*"
+#   sudo systemctl daemon-reload && sudo systemctl restart ollama
+
+# 2) Restart Ollama so it picks up the env var
+# (Mac: quit & relaunch the menu-bar app, or `ollama serve` in terminal)
+
+# 3) Build + load extension in Chrome
+cd extension && npm install && npm run build
+# Chrome → chrome://extensions → Developer mode → Load unpacked → dist/
+
+# 4) Open side panel via toolbar icon, send a message
+# Or fully automated:
+python3 scripts/browser_smoke.py
+```
 
 ### What's next (M2 work list)
 
-- [ ] Verify M1 actually loads in Chrome and streams from Ollama
-      (`cd extension && npm install && npm run build`, then load `dist/`)
+- [ ] **User: verify M1.1 in Chrome end-to-end** (see recipe above)
 - [ ] Persistent agent state schema: GOAL, PLAN, FINDINGS, VISITED, BUDGETS,
       SCRATCHPAD — backed by `chrome.storage.local` for small things and
       IndexedDB for the findings archive
-- [ ] Planner role (rare calls, thinking ON, ≤32K context budget): consumes
-      GOAL + current PLAN + FINDINGS summary, emits next PLAN
-- [ ] Executor role (hot path, thinking OFF, ≤6K budget): consumes GOAL +
-      current step + last observation, emits next tool call
-- [ ] Evaluator role (periodic, thinking ON, ≤8K budget): consumes GOAL +
-      SUCCESS_CRITERIA + FINDINGS, returns `done | continue | replan | abort`
+- [ ] Planner role (rare calls, thinking ON, ≤32K context budget)
+- [ ] Executor role (hot path, thinking OFF, ≤6K budget)
+- [ ] Evaluator role (periodic, thinking ON, ≤8K budget)
 - [ ] Compactor: scratchpad → structured findings summarizer
-- [ ] Mock tools (`echo`, `add`, `delay`, `memory.write/read`) to validate
-      the loop *before* adding real browser complexity
+- [ ] Mock tools (`echo`, `add`, `delay`, `memory.write/read`)
 - [ ] Synthetic stress test: artificially fill context, verify goal survives
 
 ### Open questions / blockers
 
-- None blocking M2 right now.
+- None blocking M2 right now — once user confirms M1.1 streams cleanly,
+  we start the agent loop work.
 
 ---
 
@@ -145,6 +191,20 @@ to decide budgets, not the 262 K theoretical context.
 
 ## Recent decisions (append at top — most recent first)
 
+- **2026-05-23 night** M1.1 cleanup committed. CORS strategy: canonical is
+  `OLLAMA_ORIGINS="chrome-extension://*"` on the Ollama server (one env
+  var, no extra process). The earlier Python proxy on port 11435 still
+  works as an override for users who can't modify Ollama's env, but
+  default URL is back to `:11434`. Service worker rewritten to a single
+  `chatStream` call with a soft 3-s "warming" notice — the previous
+  probe-then-restream pattern was double-requesting on every successful
+  chat. `loadModel` helper removed entirely.
+- **2026-05-23 evening** Ollama on Linux returns 403 for browser-extension
+  requests (origin `chrome-extension://...`). Linux session shipped a
+  Python CORS proxy at port 11435 that strips Origin headers. Default URL
+  changed to `http://localhost:11435`. Cleaner alternative
+  (`OLLAMA_ORIGINS="chrome-extension://*"`) is open — see Open questions.
+  See [`ISSUES.md`](ISSUES.md) for full debug log.
 - **2026-05-23** Single-model design for Phase 1. `qwen3.6:35b-a3b` was
   considered as a stronger Planner backend but doesn't fit on the user's
   5 GB GPU and spills entirely to CPU. Not viable interactively. *Could*
@@ -219,6 +279,7 @@ Both Mac and Linux clones of this repo. To keep them in sync:
 ## Pointers to other docs
 
 - [`README.md`](README.md) — user-facing project description, install steps
+- [`ISSUES.md`](ISSUES.md) — known issues and debug log (currently: M1 CORS)
 - [`docs/research-notes.md`](docs/research-notes.md) — literature survey
 - [`docs/ollama-qwen35-page.png`](docs/ollama-qwen35-page.png) — verified
   source for model architecture / capability claims

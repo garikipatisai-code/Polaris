@@ -8,7 +8,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  ollamaBaseUrl: 'http://localhost:11435',
+  ollamaBaseUrl: 'http://localhost:11434',
   model: 'qwen3.5:4b',
   embeddingModel: 'mxbai-embed-large',
   enableThinking: false,

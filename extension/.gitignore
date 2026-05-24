@@ -3,3 +3,10 @@ dist/
 .vite/
 *.log
 .env.local
+
+# TypeScript composite-project build artifacts
+*.tsbuildinfo
+src/manifest.d.ts
+src/manifest.js
+vite.config.d.ts
+vite.config.js
