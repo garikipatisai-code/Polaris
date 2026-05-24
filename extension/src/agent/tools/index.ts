@@ -4,7 +4,7 @@
 // New tools should be added here (and to the right category file).
 
 import { ToolRegistry } from './registry';
-import { echoTool, addTool, delayTool, finishTool, nextStepTool } from './core';
+import { echoTool, addTool, sumTool, delayTool, finishTool, nextStepTool } from './core';
 import { memoryReadTool, memoryWriteTool, memoryListTool } from './memory';
 
 export function createDefaultRegistry(): ToolRegistry {
@@ -12,6 +12,7 @@ export function createDefaultRegistry(): ToolRegistry {
   // Core
   reg.register(echoTool);
   reg.register(addTool);
+  reg.register(sumTool);
   reg.register(delayTool);
   reg.register(nextStepTool);
   reg.register(finishTool);
@@ -24,7 +25,7 @@ export function createDefaultRegistry(): ToolRegistry {
 
 export { ToolRegistry } from './registry';
 export type { ToolHandler, ToolContext } from './registry';
-export { echoTool, addTool, delayTool, finishTool, nextStepTool } from './core';
+export { echoTool, addTool, sumTool, delayTool, finishTool, nextStepTool } from './core';
 export { memoryWriteTool, memoryReadTool, memoryListTool } from './memory';
 
 /** Names of tools the orchestrator special-cases (phase transitions, plan advancement, etc.). */

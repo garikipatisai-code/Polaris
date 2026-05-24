@@ -11,6 +11,7 @@ import * as budget from '../agent/budget';
 import { ulid } from '../agent/ulid';
 import * as tools from '../agent/tools';
 import * as logModule from '../agent/log';
+import * as stressTest from '../agent/stress_test';
 import { Orchestrator } from '../agent/orchestrator';
 
 // Expose agent primitives on globalThis.polaris so the SW DevTools console
@@ -26,8 +27,13 @@ import { Orchestrator } from '../agent/orchestrator';
   logs: logModule.getLogs,
   dumpLogs: logModule.dumpLogs,
   clearLogs: logModule.clearLogs,
+  stressTest: stressTest.stressTest,
+  stressReset: stressTest.stressReset,
 };
-console.log('[polaris] state + tools primitives → globalThis.polaris (try polaris.dumpLogs())');
+console.log(
+  '[polaris] state + tools primitives → globalThis.polaris ' +
+  '(try polaris.dumpLogs() or polaris.stressTest())',
+);
 
 // Open the side panel when the toolbar icon is clicked.
 chrome.sidePanel
@@ -352,6 +358,27 @@ async function handleAgentResume(port: chrome.runtime.Port): Promise<void> {
       },
     },
   });
+
+  // Replay the persisted event log so the panel timeline shows real history
+  // (tool calls, results, prior verdicts) — without this, the user resumes
+  // and sees an empty timeline while the orchestrator continues from a
+  // scratchpad full of context the user can't see.
+  try {
+    const persisted = await stateStore.eventsSince(state.taskId, 0);
+    // Drop the resume planner event we just synthesized to avoid duplicate.
+    const replayable = persisted.slice(-100); // cap for very long tasks
+    for (const ev of replayable) {
+      send(port, {
+        type: 'agent.event',
+        event: { type: ev.type, data: ev.data },
+      });
+    }
+    if (replayable.length > 0) {
+      console.info(`[polaris] resume: replayed ${replayable.length} events from IDB`);
+    }
+  } catch (e) {
+    console.warn('[polaris] resume: failed to replay events from IDB', e);
+  }
 
   const settings = await getSettings();
   const client = new OllamaClient(settings.ollamaBaseUrl);

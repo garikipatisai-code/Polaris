@@ -28,7 +28,7 @@ export const echoTool: ToolHandler<{ text: string }, { text: string }> = {
 
 export const addTool: ToolHandler<{ a: number; b: number }, { sum: number }> = {
   name: 'add',
-  description: 'Adds two numbers and returns the sum.',
+  description: 'Add two numbers and return the sum. For 3+ numbers prefer the `sum` tool.',
   argsSchema: z.object({ a: z.number(), b: z.number() }),
   outputSchema: z.object({ sum: z.number() }),
   parametersJSON: {
@@ -40,6 +40,30 @@ export const addTool: ToolHandler<{ a: number; b: number }, { sum: number }> = {
     required: ['a', 'b'],
   },
   execute: async (args) => ({ sum: args.a + args.b }),
+};
+
+export const sumTool: ToolHandler<{ numbers: number[] }, { sum: number }> = {
+  name: 'sum',
+  description:
+    'Add an array of numbers and return the total. Use this when summing 3 or more values — preferred over chaining multiple `add` calls.',
+  argsSchema: z.object({
+    numbers: z.array(z.number()).min(1).max(100),
+  }),
+  outputSchema: z.object({ sum: z.number() }),
+  parametersJSON: {
+    type: 'object',
+    properties: {
+      numbers: {
+        type: 'array',
+        items: { type: 'number' },
+        minItems: 1,
+        maxItems: 100,
+        description: 'List of numbers to sum.',
+      },
+    },
+    required: ['numbers'],
+  },
+  execute: async (args) => ({ sum: args.numbers.reduce((acc, n) => acc + n, 0) }),
 };
 
 export const delayTool: ToolHandler<{ ms: number }, { waitedMs: number }> = {

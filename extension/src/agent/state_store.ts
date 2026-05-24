@@ -43,9 +43,36 @@ const STALE_TASK_MS = 60_000;
 // Hot state (chrome.storage.local)
 // ============================================================================
 
+// Default values for fields added in later schema versions. Used by loadHot
+// to migrate persisted state forward — legacy stored objects don't have new
+// fields, and reading `undefined >= number` is `false`, so safety code that
+// depends on `breaker.totalReplans >= MAX_TOTAL_REPLANS` would silently
+// bypass without this. Schema bump (SCHEMA_VERSION → 2) is the right answer
+// long-term; for now we forward-fill on read.
+const DEFAULT_BREAKER_STATE = {
+  repeats: {} as Record<string, number>,
+  recentOutcomes: [] as ('ok' | 'error')[],
+  stepsWithoutProgress: 0,
+  lastFindingsCount: 0,
+  totalReplans: 0,
+  trips: [] as { at: number; reason: string; level?: 'nudge' | 'replan' | 'abort' }[],
+};
+
 export async function loadHot(): Promise<AgentStateHot | null> {
   const out = await chrome.storage.local.get(HOT_KEY);
-  return (out[HOT_KEY] as AgentStateHot | undefined) ?? null;
+  const stored = out[HOT_KEY] as Partial<AgentStateHot> | undefined;
+  if (!stored) return null;
+  // Forward-fill any missing fields so legacy persisted state interacts
+  // correctly with newer safety code. Existing fields in `stored` always win.
+  return {
+    ...stored,
+    breaker: { ...DEFAULT_BREAKER_STATE, ...(stored.breaker ?? {}) },
+    turnsOnCurrentStep: stored.turnsOnCurrentStep ?? 0,
+    pendingFinishSummary: stored.pendingFinishSummary ?? null,
+    replanHint: stored.replanHint ?? null,
+    finalAnswer: stored.finalAnswer ?? null,
+    resumedAt: stored.resumedAt ?? null,
+  } as AgentStateHot;
 }
 
 /**

@@ -45,6 +45,11 @@ export default function App() {
   const [lastRoleStartAt, setLastRoleStartAt] = useState<number | null>(null);
   const [, forceTick] = useState(0);
   const [resumable, setResumable] = useState<ResumableSnapshot | null>(null);
+  // Buffer for outbound messages while the port is disconnected. Drained on
+  // reconnect (the connect() function does its own initial sync). Capped to
+  // avoid unbounded growth if reconnect never succeeds.
+  const queuedMessages = useRef<RequestMessage[]>([]);
+  const MAX_QUEUE = 20;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connStatus, setConnStatus] = useState<'unknown' | 'ok' | 'fail'>('unknown');
   const [connError, setConnError] = useState<string | null>(null);
@@ -183,6 +188,12 @@ export default function App() {
       sendOn(port, { type: 'settings.get' });
       sendOn(port, { type: 'ollama.ping' });
       sendOn(port, { type: 'agent.getSnapshot' });
+      // Drain any messages queued while we were disconnected.
+      const drained = queuedMessages.current.splice(0);
+      for (const msg of drained) sendOn(port, msg);
+      if (drained.length > 0) {
+        console.info(`[polaris] flushed ${drained.length} queued message(s) after reconnect`);
+      }
     };
 
     connect();
@@ -223,10 +234,21 @@ export default function App() {
   function send(_port: chrome.runtime.Port | null, msg: RequestMessage): boolean {
     const port = portRef.current;
     if (!port) {
-      console.warn(`[polaris] no active port; dropping message: ${msg.type}`);
+      // Port is disconnected — queue the message; the next connect() drains it.
+      if (queuedMessages.current.length < MAX_QUEUE) {
+        queuedMessages.current.push(msg);
+        console.warn(`[polaris] port down; queued ${msg.type} (queue size ${queuedMessages.current.length})`);
+      } else {
+        console.warn(`[polaris] queue full (${MAX_QUEUE}); dropped ${msg.type}`);
+      }
       return false;
     }
-    return sendOn(port, msg);
+    const ok = sendOn(port, msg);
+    if (!ok && queuedMessages.current.length < MAX_QUEUE) {
+      // sendOn already nulled portRef; queue for the upcoming reconnect.
+      queuedMessages.current.push(msg);
+    }
+    return ok;
   }
 
   function sendMessage() {
