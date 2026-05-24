@@ -30,6 +30,8 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [warmingNotice, setWarmingNotice] = useState<string | null>(null);
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
+  const [lastRoleStartAt, setLastRoleStartAt] = useState<number | null>(null);
+  const [, forceTick] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connStatus, setConnStatus] = useState<'unknown' | 'ok' | 'fail'>('unknown');
   const [connError, setConnError] = useState<string | null>(null);
@@ -82,11 +84,24 @@ export default function App() {
           break;
         case 'agent.started':
           setAgentRun({ taskId: msg.taskId, goal: msg.goal, events: [], terminal: null });
+          setLastRoleStartAt(null);
           break;
         case 'agent.event':
+          if (msg.event.type === 'role_start') {
+            setLastRoleStartAt(Date.now());
+          } else if (
+            msg.event.type === 'tool_call' ||
+            msg.event.type === 'tool_result' ||
+            msg.event.type === 'role_end' ||
+            msg.event.type === 'verdict' ||
+            msg.event.type === 'error'
+          ) {
+            setLastRoleStartAt(null);
+          }
           setAgentRun((run) => (run ? { ...run, events: [...run.events, msg.event] } : run));
           break;
         case 'agent.terminal':
+          setLastRoleStartAt(null);
           setAgentRun((run) =>
             run
               ? { ...run, terminal: { phase: msg.phase, summary: msg.summary, error: msg.error } }
@@ -110,6 +125,14 @@ export default function App() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages, streaming, warmingNotice, agentRun]);
 
+  // Tick every 500ms while we're waiting on the model so the "awaiting model…"
+  // counter updates live.
+  useEffect(() => {
+    if (lastRoleStartAt == null) return;
+    const interval = setInterval(() => forceTick((t) => t + 1), 500);
+    return () => clearInterval(interval);
+  }, [lastRoleStartAt]);
+
   function send(port: chrome.runtime.Port, msg: RequestMessage) {
     port.postMessage(msg);
   }
@@ -131,7 +154,8 @@ export default function App() {
 
   function startAgent() {
     const goalText = (goal.trim() || input.trim());
-    if (!goalText || agentRun || !portRef.current) return;
+    if (!goalText || agentRunning || !portRef.current) return;
+    // Auto-clear any prior terminal run so the new one renders fresh.
     setAgentRun({ taskId: '...', goal: goalText, events: [], terminal: null });
     if (!goal.trim()) setInput('');
     send(portRef.current, { type: 'agent.start', goal: goalText });
@@ -317,6 +341,13 @@ export default function App() {
               {agentRunning && agentRun.events.length === 0 && (
                 <li className="agent-event agent-event-pending">
                   <span className="warming">⋯ Starting up…</span>
+                </li>
+              )}
+              {agentRunning && lastRoleStartAt != null && (
+                <li className="agent-event agent-event-pending">
+                  <span className="warming">
+                    ⋯ awaiting model… {Math.floor((Date.now() - lastRoleStartAt) / 1000)}s
+                  </span>
                 </li>
               )}
             </ol>
