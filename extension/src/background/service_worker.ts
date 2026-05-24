@@ -230,6 +230,7 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
   const orchestrator = new Orchestrator({
     client,
     model: settings.model,
+    plannerThinking: settings.plannerThinking,
     onEvent: (event) => {
       send(port, { type: 'agent.event', event });
       if (event.type === 'verdict') {

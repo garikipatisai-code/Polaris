@@ -34,6 +34,8 @@ export interface OrchestratorOptions {
   onEvent?: (event: OrchestratorEvent) => void;
   /** Hard cap on Executor turns per run (safety net before circuit breaker lands). */
   maxSteps?: number;
+  /** Use thinking mode for the Planner role. Default true. */
+  plannerThinking?: boolean;
 }
 
 export class Orchestrator {
@@ -42,6 +44,7 @@ export class Orchestrator {
   private readonly registry: ToolRegistry;
   private readonly onEvent: (event: OrchestratorEvent) => void;
   private readonly maxSteps: number;
+  private readonly plannerThinking: boolean;
   private abort: AbortController | null = null;
 
   constructor(opts: OrchestratorOptions) {
@@ -50,6 +53,7 @@ export class Orchestrator {
     this.registry = opts.registry ?? createDefaultRegistry();
     this.onEvent = opts.onEvent ?? (() => {});
     this.maxSteps = opts.maxSteps ?? 30;
+    this.plannerThinking = opts.plannerThinking ?? true;
   }
 
   /**
@@ -70,6 +74,7 @@ export class Orchestrator {
       model: this.model,
       signal: this.abort.signal,
       isInitial: true,
+      thinkingMode: this.plannerThinking,
     });
 
     if (!result.ok || !result.plan) {

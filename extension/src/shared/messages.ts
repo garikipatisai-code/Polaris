@@ -6,7 +6,12 @@ export interface Settings {
   ollamaBaseUrl: string;
   model: string;
   embeddingModel: string;
+  /** Thinking mode for chat replies (M1 chat path). */
   enableThinking: boolean;
+  /** Thinking mode for the Planner role. Default on; disable on slow hardware. */
+  plannerThinking: boolean;
+  /** Thinking mode for the Evaluator role (M2.5+). Default on; disable on slow hardware. */
+  evaluatorThinking: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -14,6 +19,8 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'qwen3.5:4b',
   embeddingModel: 'mxbai-embed-large',
   enableThinking: false,
+  plannerThinking: true,
+  evaluatorThinking: true,
 };
 
 export interface ChatStats {

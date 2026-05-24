@@ -24,6 +24,8 @@ export interface PlannerInput {
   signal?: AbortSignal;
   isInitial: boolean;
   replanHint?: string;
+  /** Whether to enable Qwen's thinking mode for this Planner call. */
+  thinkingMode: boolean;
 }
 
 export interface PlannerOutput {
@@ -58,7 +60,7 @@ const PlannerResponseSchema = z.object({
 });
 
 export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
-  const { state, registry, client, model, signal, isInitial, replanHint } = input;
+  const { state, registry, client, model, signal, isInitial, replanHint, thinkingMode } = input;
 
   const findings = await store.findingsByRecency(state.taskId, 20);
   const toolIndex = registry.toIndex();
@@ -84,12 +86,12 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
     };
   }
 
-  // First attempt — thinking ON.
+  // First attempt — thinking per setting.
   let response = await client.chatOnce({
     model,
     messages: [{ role: 'system', content: systemPrompt }],
     format: 'json',
-    think: true,
+    think: thinkingMode,
     signal,
   });
   let promptTokens = response.prompt_eval_count ?? estimatedPromptTokens;

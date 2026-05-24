@@ -314,7 +314,23 @@ export default function App() {
               checked={settings.enableThinking}
               onChange={(e) => updateSetting('enableThinking', e.target.checked)}
             />
-            <span>Enable thinking mode</span>
+            <span>Enable thinking mode for chat</span>
+          </label>
+          <label className="field checkbox">
+            <input
+              type="checkbox"
+              checked={settings.plannerThinking}
+              onChange={(e) => updateSetting('plannerThinking', e.target.checked)}
+            />
+            <span>Thinking mode for Planner (slower but higher-quality plans)</span>
+          </label>
+          <label className="field checkbox">
+            <input
+              type="checkbox"
+              checked={settings.evaluatorThinking}
+              onChange={(e) => updateSetting('evaluatorThinking', e.target.checked)}
+            />
+            <span>Thinking mode for Evaluator (M2.5+)</span>
           </label>
           <div className="drawer-actions">
             <button onClick={testConnection}>Test connection</button>
