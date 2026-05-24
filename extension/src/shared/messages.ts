@@ -38,6 +38,7 @@ export type RequestMessage =
   | { type: 'ollama.ping' }
   | { type: 'agent.start'; goal: string }
   | { type: 'agent.abort' }
+  | { type: 'agent.reset' }
   | { type: 'agent.getSnapshot' };
 
 // Service worker → side panel

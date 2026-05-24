@@ -85,6 +85,13 @@ chrome.runtime.onConnect.addListener((port) => {
           await currentOrchestrator?.stop();
           break;
         }
+        case 'agent.reset': {
+          await currentOrchestrator?.stop();
+          await stateStore.clearHot();
+          const snapshot = await stateStore.loadHot();
+          send(port, { type: 'agent.snapshot', state: snapshot });
+          break;
+        }
         case 'agent.getSnapshot': {
           const state = await stateStore.loadHot();
           send(port, { type: 'agent.snapshot', state });

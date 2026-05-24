@@ -36,6 +36,9 @@ const SCHEMA_VERSION = 1;
 
 const TERMINAL_PHASES = new Set<Phase>(['IDLE', 'DONE', 'ABORTED']);
 
+/** A task in a non-terminal phase with no lastTouch update in this long is presumed crashed. */
+const STALE_TASK_MS = 60_000;
+
 // ============================================================================
 // Hot state (chrome.storage.local)
 // ============================================================================
@@ -74,16 +77,40 @@ export async function bumpLastTouch(): Promise<void> {
 
 /**
  * Begin a new task with a verbatim, immutable goal.
- * Refuses if an existing task is in a non-terminal phase.
+ *
+ * If an existing task is in a non-terminal phase:
+ *   - if its lastTouch is older than STALE_TASK_MS, treat it as a crashed
+ *     task (SW died mid-flight, reload, etc.), mark it ABORTED, and proceed
+ *   - otherwise throw — there's a genuinely active task we shouldn't preempt
+ *
+ * The full crash-resume design (continue from persisted phase) lands in M2.6.
+ * For now this just unblocks the user.
  */
 export async function startTask(goalText: string): Promise<AgentStateHot> {
   const trimmed = goalText.trim();
   if (!trimmed) throw new Error('goal text must be non-empty');
   const current = await loadHot();
   if (current && !TERMINAL_PHASES.has(current.phase)) {
-    throw new Error(
-      `cannot start task: existing task ${current.taskId} is in phase ${current.phase}`,
-    );
+    const age = Date.now() - (current.lastTouch || current.createdAt);
+    if (age > STALE_TASK_MS) {
+      // Crashed — abort the zombie and proceed.
+      const aborted: AgentStateHot = {
+        ...current,
+        phase: 'ABORTED',
+        resumedAt: Date.now(),
+        lastTouch: Date.now(),
+      };
+      await setHot(aborted);
+      console.warn(
+        `[polaris] auto-aborted stale task ${current.taskId} ` +
+        `(was ${current.phase}, no activity for ${Math.round(age / 1000)}s)`,
+      );
+    } else {
+      throw new Error(
+        `cannot start task: existing task ${current.taskId} is in phase ${current.phase} ` +
+        `(last activity ${Math.round(age / 1000)}s ago — use polaris.state.clearHot() to force)`,
+      );
+    }
   }
   const taskId = ulid();
   const now = Date.now();

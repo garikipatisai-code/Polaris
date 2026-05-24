@@ -198,6 +198,14 @@ export default function App() {
     send(portRef.current, { type: 'ollama.ping' });
   }
 
+  function resetAgentState() {
+    if (!portRef.current) return;
+    if (!confirm('Wipe persistent agent state? (Clears any stuck/zombie task. Chat history in this panel is unaffected.)')) return;
+    setAgentRun(null);
+    setLastRoleStartAt(null);
+    send(portRef.current, { type: 'agent.reset' });
+  }
+
   const agentRunning = agentRun !== null && agentRun.terminal === null;
 
   return (
@@ -281,6 +289,12 @@ export default function App() {
                   : `✗ ${connError ?? 'Connection failed'}`}
               </span>
             )}
+          </div>
+          <div className="drawer-actions">
+            <button className="danger" onClick={resetAgentState}>
+              Reset agent state
+            </button>
+            <span className="muted-hint">Wipes persistent task state if stuck.</span>
           </div>
         </div>
       )}

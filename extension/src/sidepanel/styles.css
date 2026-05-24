@@ -152,6 +152,9 @@ button { font-family: inherit; }
   font-size: 13px;
 }
 .drawer button:hover { filter: brightness(1.05); }
+.drawer button.danger { background: var(--error); }
+.drawer button.danger:hover { filter: brightness(1.1); }
+.muted-hint { font-size: 11px; color: var(--text-muted); }
 .conn-status { font-size: 12px; }
 .conn-status.ok { color: var(--success); }
 .conn-status.fail { color: var(--error); }
