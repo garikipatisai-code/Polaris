@@ -184,7 +184,7 @@ async function loadModel(
     signal,
   });
   if (!res.ok) {
-    const detail = res.text().catch(() => '');
+    const detail = await res.text().catch(() => 'no body');
     throw new Error(`load HTTP ${res.status}: ${detail}`);
   }
 }

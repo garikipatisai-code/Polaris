@@ -54,10 +54,32 @@ Two possibilities:
    ```
    Some builds require `--cors` flag to allow browser extension origins.
 
-### Fix plan (once root cause confirmed)
-- If `/api/generate` returns 403 but `/api/chat` works → use `/api/chat` with `stream:false` as warm-up instead of `/api/generate`
-- If Ollama needs `--cors` flag → document in CLAUDE.md for Linux box setup
-- Fix the `[object Promise]` error detail by not relying on `res.text()` in the catch block
+### Fix plan
+
+**Solution: CORS proxy on port 11435 (DONE)**
+A Python CORS proxy is now running on the Linux box at `localhost:11435`.
+It strips the `Origin` header from requests before forwarding to Ollama,
+bypassing the 403 rejection.
+
+**To use from Mac browser extension:**
+1. In Polaris settings, set Ollama URL to: `http://10.0.0.1:11435`
+2. All requests now go through the proxy, which removes the Origin header
+
+**To make the proxy persistent** (survives reboot), see `/home/appusai/enable-ollama-cors.sh` — run with sudo.
+
+**To manually start the proxy:**
+```bash
+python3 /home/appusai/ollama-cors-proxy.py
+```
+
+**To verify it's working:**
+```bash
+curl -s http://localhost:11435/api/tags | python3 -c "import json,sys; print(len(json.load(sys.stdin)['models']), 'models')"
+```
+
+---
+
+## Issue #2: [object Promise] in error message (P2 — FIXED ✓)
 
 ---
 
