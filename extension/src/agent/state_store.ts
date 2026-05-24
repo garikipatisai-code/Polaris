@@ -127,7 +127,13 @@ export async function startTask(goalText: string): Promise<AgentStateHot> {
       totalTokens: 0,
     },
     visited: { hashes: [] },
-    breaker: { repeats: {}, recentErrors: 0, stepsWithoutProgress: 0, trips: [] },
+    breaker: {
+      repeats: {},
+      recentOutcomes: [],
+      stepsWithoutProgress: 0,
+      lastFindingsCount: 0,
+      trips: [],
+    },
     scratchpadRef: { count: 0, tokens: 0 },
     currentStepId: null,
     pendingFinishSummary: null,
@@ -424,6 +430,13 @@ async function deleteAllByRange(index: any, range: IDBKeyRange): Promise<void> {
     await cursor.delete();
     cursor = await cursor.continue();
   }
+}
+
+/** Count findings for a task. Cheap-ish — single index read. */
+export async function countFindings(taskId: string): Promise<number> {
+  const db = await getDB();
+  const range = IDBKeyRange.bound([taskId, 0], [taskId, Number.MAX_SAFE_INTEGER]);
+  return db.countFromIndex('findings', 'by-task-ts', range);
 }
 
 // Re-export approxTokens for convenience.

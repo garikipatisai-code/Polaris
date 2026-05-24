@@ -16,6 +16,6 @@ export default defineManifest({
   action: {
     default_title: 'Open Polaris',
   },
-  permissions: ['storage', 'sidePanel'],
+  permissions: ['storage', 'sidePanel', 'alarms'],
   host_permissions: ['http://*/*', 'https://*/*'],
 });

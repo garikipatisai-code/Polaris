@@ -88,14 +88,16 @@ export interface VisitedSet {
 }
 
 export interface BreakerState {
-  /** action hash -> consecutive count */
+  /** action hash → consecutive count (only most-recent action retained) */
   repeats: Record<string, number>;
   /** sliding window of last 5 step outcomes */
-  recentErrors: number;
+  recentOutcomes: ('ok' | 'error')[];
   /** ticks where FINDINGS didn't grow */
   stepsWithoutProgress: number;
+  /** Findings count seen at the previous check; used to detect growth. */
+  lastFindingsCount: number;
   /** last 5 trips for telemetry */
-  trips: { at: number; reason: string }[];
+  trips: { at: number; reason: string; level?: 'nudge' | 'replan' | 'abort' }[];
 }
 
 export interface ScratchpadRef {

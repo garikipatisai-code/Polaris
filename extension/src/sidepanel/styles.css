@@ -498,6 +498,74 @@ button { font-family: inherit; }
 }
 .agent-error-label { font-weight: 600; }
 
+/* ===== Resume card (M2.6 crash-resume) ===== */
+.resume-card {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--accent-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.resume-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.resume-label {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 13px;
+}
+.resume-phase {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.resume-goal {
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border-radius: 4px;
+  line-height: 1.4;
+}
+.resume-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.resume-actions {
+  display: flex;
+  gap: 8px;
+}
+.resume-resume {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+}
+.resume-resume:hover { filter: brightness(1.05); }
+.resume-discard {
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.resume-discard:hover { color: var(--error); border-color: var(--error); }
+
 .collapsible-toggle {
   margin-top: 4px;
   background: transparent;

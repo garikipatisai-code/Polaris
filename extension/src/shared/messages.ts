@@ -46,6 +46,7 @@ export type RequestMessage =
   | { type: 'agent.start'; goal: string }
   | { type: 'agent.abort' }
   | { type: 'agent.reset' }
+  | { type: 'agent.resume' }
   | { type: 'agent.getSnapshot' };
 
 // Service worker → side panel

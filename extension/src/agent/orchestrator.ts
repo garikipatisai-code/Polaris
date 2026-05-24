@@ -25,6 +25,7 @@ import { runPlanner } from './roles/planner';
 import { runEvaluator } from './roles/evaluator';
 import { runCompactor } from './roles/compactor';
 import * as store from './state_store';
+import * as breaker from './circuit_breaker';
 import type {
   AgentStateHot,
   AgentEventType,
@@ -84,6 +85,29 @@ export class Orchestrator {
     const fresh = await store.startTask(goalText);
     await this.emit(fresh.taskId, 'phase', { phase: 'PLANNING' });
     return await this.runPlannerStep(fresh, /*isInitial=*/ true, /*replanHint=*/ undefined);
+  }
+
+  /**
+   * Resume an incomplete task from persistent state. The task must be in
+   * a non-terminal phase. Used by SW restart / browser restart / panel
+   * reconnect — the orchestrator instance is fresh but state is recovered
+   * from chrome.storage.local + IndexedDB.
+   */
+  async resume(): Promise<AgentStateHot> {
+    this.abort = new AbortController();
+    this.stepsSinceEval = 0;
+    const state = await store.loadHot();
+    if (!state) throw new Error('resume: no task in storage');
+    if (state.phase === 'IDLE' || state.phase === 'DONE' || state.phase === 'ABORTED') {
+      throw new Error(`resume: task already terminal (phase=${state.phase})`);
+    }
+    const resumed = await store.patchHot({ resumedAt: Date.now() });
+    await this.emit(resumed.taskId, 'phase', {
+      phase: resumed.phase,
+      resumed: true,
+      reason: 'service-worker / browser restart — resuming from persisted state',
+    });
+    return resumed;
   }
 
   /** Run the loop until a terminal phase (DONE / ABORTED). */
@@ -266,6 +290,62 @@ export class Orchestrator {
       promptTokens: result.promptTokens,
       genTokens: result.genTokens,
     });
+
+    // Circuit breaker: update counters, check trip signatures.
+    if (result.toolCall && result.toolResult) {
+      const planned = {
+        name: result.toolCall.function.name,
+        args: result.toolCall.function.arguments,
+      };
+      const findingsCount = await store.countFindings(state.taskId);
+      const update = breaker.recordAfter(
+        next,
+        planned,
+        { ok: result.toolResult.ok, fatal: result.toolResult.fatal },
+        findingsCount,
+      );
+      next = await store.patchHot({ breaker: update.breaker });
+
+      // Fatal-error abort takes precedence.
+      if (update.abortReason) {
+        const aborted = await store.patchHot({
+          phase: 'ABORTED',
+          breaker: breaker.recordTrip(next, update.abortReason, 'abort'),
+        });
+        await this.emit(aborted.taskId, 'breaker', {
+          action: 'abort',
+          reason: update.abortReason,
+        });
+        await this.emit(aborted.taskId, 'error', { error: update.abortReason });
+        return aborted;
+      }
+
+      // Behavioural trips (repetition, no-progress).
+      const decision = breaker.evaluate(next, planned);
+      if (decision.kind === 'replan') {
+        next = await store.patchHot({
+          phase: 'PLANNING',
+          replanHint: `circuit breaker: ${decision.reason}`,
+          breaker: breaker.recordTrip(next, decision.reason, 'replan'),
+        });
+        await this.emit(next.taskId, 'breaker', {
+          action: 'replan',
+          reason: decision.reason,
+        });
+        return next;
+      }
+      if (decision.kind === 'abort') {
+        const aborted = await store.patchHot({
+          phase: 'ABORTED',
+          breaker: breaker.recordTrip(next, decision.reason, 'abort'),
+        });
+        await this.emit(aborted.taskId, 'breaker', {
+          action: 'abort',
+          reason: decision.reason,
+        });
+        return aborted;
+      }
+    }
 
     if (result.finished) {
       // Executor proposed a final answer. Route to EVALUATING; Evaluator

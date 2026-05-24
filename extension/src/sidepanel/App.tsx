@@ -21,6 +21,15 @@ interface AgentRun {
   terminal: { phase: 'DONE' | 'ABORTED'; summary?: string; error?: string } | null;
 }
 
+interface ResumableSnapshot {
+  taskId: string;
+  goal: string;
+  phase: string;
+  lastTouch: number;
+}
+
+const NON_TERMINAL_PHASES = new Set(['PLANNING', 'EXECUTING', 'COMPACTING', 'EVALUATING', 'BREAKER']);
+
 export default function App() {
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -35,6 +44,7 @@ export default function App() {
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [lastRoleStartAt, setLastRoleStartAt] = useState<number | null>(null);
   const [, forceTick] = useState(0);
+  const [resumable, setResumable] = useState<ResumableSnapshot | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connStatus, setConnStatus] = useState<'unknown' | 'ok' | 'fail'>('unknown');
   const [connError, setConnError] = useState<string | null>(null);
@@ -138,13 +148,26 @@ export default function App() {
           );
           break;
         case 'agent.snapshot':
-          // Not used directly in M2.3 UI; reserved for the PlanTree in M2.4+.
+          // If there's a non-terminal task in storage AND no in-memory run,
+          // surface a resume card. Triggered on panel mount — covers the
+          // SW-restart / browser-restart case.
+          if (msg.state && NON_TERMINAL_PHASES.has(msg.state.phase)) {
+            setResumable({
+              taskId: msg.state.taskId,
+              goal: msg.state.goal.text,
+              phase: msg.state.phase,
+              lastTouch: msg.state.lastTouch,
+            });
+          } else {
+            setResumable(null);
+          }
           break;
       }
     });
 
     send(port, { type: 'settings.get' });
     send(port, { type: 'ollama.ping' });
+    send(port, { type: 'agent.getSnapshot' });
 
     return () => port.disconnect();
   }, []);
@@ -239,6 +262,28 @@ export default function App() {
     if (!confirm('Wipe persistent agent state? (Clears any stuck/zombie task. Chat history in this panel is unaffected.)')) return;
     setAgentRun(null);
     setLastRoleStartAt(null);
+    setResumable(null);
+    send(portRef.current, { type: 'agent.reset' });
+  }
+
+  function resumeAgent() {
+    if (!portRef.current || !resumable) return;
+    setAgentRun({
+      taskId: resumable.taskId,
+      goal: resumable.goal,
+      plan: null,
+      successCriteria: [],
+      events: [],
+      terminal: null,
+    });
+    setResumable(null);
+    send(portRef.current, { type: 'agent.resume' });
+  }
+
+  function discardResumable() {
+    if (!portRef.current) return;
+    if (!confirm('Discard the incomplete task? Its goal, plan and findings will be wiped.')) return;
+    setResumable(null);
     send(portRef.current, { type: 'agent.reset' });
   }
 
@@ -352,7 +397,28 @@ export default function App() {
       )}
 
       <div className="messages" ref={scrollRef}>
-        {messages.length === 0 && !isStreaming && !agentRun && (
+        {resumable && !agentRun && (
+          <div className="resume-card">
+            <div className="resume-head">
+              <span className="resume-label">⏸ Incomplete task</span>
+              <span className="resume-phase">{resumable.phase}</span>
+            </div>
+            <div className="resume-goal">{resumable.goal}</div>
+            <div className="resume-meta">
+              Last activity {Math.round((Date.now() - resumable.lastTouch) / 1000)}s ago
+            </div>
+            <div className="resume-actions">
+              <button className="resume-resume" onClick={resumeAgent}>
+                Resume
+              </button>
+              <button className="resume-discard" onClick={discardResumable}>
+                Discard
+              </button>
+            </div>
+          </div>
+        )}
+
+        {messages.length === 0 && !isStreaming && !agentRun && !resumable && (
           <div className="welcome">
             <p>Ask anything to chat with your local model.</p>
             <p className="muted">

@@ -29,6 +29,40 @@ chrome.sidePanel
   ?.setPanelBehavior?.({ openPanelOnActionClick: true })
   .catch((e) => console.warn('[polaris] sidePanel.setPanelBehavior failed', e));
 
+// ----------------------------------------------------------------------------
+// Watchdog (M2.6)
+// ----------------------------------------------------------------------------
+// chrome.alarms wakes us periodically. If a task is in a non-terminal phase
+// and lastTouch is older than WATCHDOG_STALE_MS, we mark it ABORTED — covers
+// the case where the SW died mid-task and can't continue itself. The
+// orchestrator's own state mutations bump lastTouch via patchHot(), so a
+// healthy active task touches state every Executor turn.
+
+const WATCHDOG_ALARM = 'polaris.watchdog';
+const WATCHDOG_INTERVAL_MIN = 1; // chrome.alarms enforces ≥1 min in production MV3
+const WATCHDOG_STALE_MS = 5 * 60 * 1000; // 5 minutes — generous to tolerate slow Planner calls
+const TERMINAL_PHASES = new Set(['IDLE', 'DONE', 'ABORTED']);
+
+chrome.alarms?.create?.(WATCHDOG_ALARM, { periodInMinutes: WATCHDOG_INTERVAL_MIN });
+
+chrome.alarms?.onAlarm?.addListener(async (alarm) => {
+  if (alarm.name !== WATCHDOG_ALARM) return;
+  try {
+    const state = await stateStore.loadHot();
+    if (!state) return;
+    if (TERMINAL_PHASES.has(state.phase)) return;
+    const idle = Date.now() - (state.lastTouch ?? state.createdAt);
+    if (idle > WATCHDOG_STALE_MS) {
+      console.warn(
+        `[polaris] watchdog: task ${state.taskId} stuck in ${state.phase} for ${Math.round(idle / 1000)}s — aborting`,
+      );
+      await stateStore.patchHot({ phase: 'ABORTED' });
+    }
+  } catch (e) {
+    console.warn('[polaris] watchdog tick failed', e);
+  }
+});
+
 // One in-flight chat at a time; abort cancels current generation.
 let currentAbort: AbortController | null = null;
 
@@ -79,6 +113,10 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         case 'agent.start': {
           await handleAgentStart(port, msg.goal);
+          break;
+        }
+        case 'agent.resume': {
+          await handleAgentResume(port);
           break;
         }
         case 'agent.abort': {
@@ -235,7 +273,8 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
     onEvent: (event) => {
       send(port, { type: 'agent.event', event });
       if (event.type === 'verdict') {
-        const d = event.data as { summary?: string; verdict?: string; reason?: string } | undefined;
+        const d = event.data as { summary?: string; verdict?: string; reason?: string; finalAnswer?: string } | undefined;
+        if (d?.verdict === 'done' && d.finalAnswer) lastSummary = d.finalAnswer;
         if (d?.verdict === 'done' && d.summary) lastSummary = d.summary;
         if (d?.verdict === 'abort') lastError = d.reason ?? 'aborted';
       }
@@ -254,7 +293,91 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
     send(port, {
       type: 'agent.terminal',
       phase: terminal.phase === 'DONE' ? 'DONE' : 'ABORTED',
-      summary: lastSummary,
+      summary: terminal.finalAnswer ?? lastSummary,
+      error: lastError,
+    });
+  } catch (e) {
+    send(port, {
+      type: 'agent.terminal',
+      phase: 'ABORTED',
+      error: explainError(e as Error),
+    });
+  } finally {
+    currentOrchestrator = null;
+  }
+}
+
+async function handleAgentResume(port: chrome.runtime.Port): Promise<void> {
+  if (currentOrchestrator) {
+    send(port, {
+      type: 'agent.terminal',
+      phase: 'ABORTED',
+      error: 'an agent task is already running — abort it first',
+    });
+    return;
+  }
+  const state = await stateStore.loadHot();
+  if (!state) {
+    send(port, { type: 'agent.terminal', phase: 'ABORTED', error: 'nothing to resume' });
+    return;
+  }
+  if (TERMINAL_PHASES.has(state.phase)) {
+    send(port, {
+      type: 'agent.terminal',
+      phase: 'ABORTED',
+      error: `task already terminal (phase=${state.phase})`,
+    });
+    return;
+  }
+
+  const settings = await getSettings();
+  const client = new OllamaClient(settings.ollamaBaseUrl);
+
+  let lastSummary: string | undefined;
+  let lastError: string | undefined;
+
+  const orchestrator = new Orchestrator({
+    client,
+    model: settings.model,
+    plannerThinking: settings.plannerThinking,
+    evaluatorThinking: settings.evaluatorThinking,
+    onEvent: (event) => {
+      send(port, { type: 'agent.event', event });
+      if (event.type === 'verdict') {
+        const d = event.data as { summary?: string; verdict?: string; reason?: string; finalAnswer?: string } | undefined;
+        if (d?.verdict === 'done' && d.finalAnswer) lastSummary = d.finalAnswer;
+        if (d?.verdict === 'abort') lastError = d.reason ?? 'aborted';
+      }
+      if (event.type === 'error') {
+        const d = event.data as { error?: string } | undefined;
+        if (d?.error) lastError = d.error;
+      }
+    },
+  });
+  currentOrchestrator = orchestrator;
+
+  try {
+    const resumed = await orchestrator.resume();
+    send(port, { type: 'agent.started', taskId: resumed.taskId, goal: resumed.goal.text });
+    // Re-emit a synthetic role_end(planner) so the panel populates plan + criteria.
+    send(port, {
+      type: 'agent.event',
+      event: {
+        type: 'role_end',
+        data: {
+          role: 'planner',
+          ok: true,
+          plan: resumed.plan,
+          successCriteria: resumed.goal.successCriteria,
+          resumed: true,
+        },
+      },
+    });
+    const terminal = await orchestrator.runUntilTerminal();
+    send(port, {
+      type: 'agent.terminal',
+      phase: terminal.phase === 'DONE' ? 'DONE' : 'ABORTED',
+      summary: terminal.finalAnswer ?? lastSummary,
       error: lastError,
     });
   } catch (e) {
