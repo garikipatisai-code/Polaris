@@ -402,3 +402,16 @@ button { font-family: inherit; }
   color: var(--error);
 }
 .agent-error-label { font-weight: 600; }
+
+.collapsible-toggle {
+  margin-top: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.collapsible-toggle:hover { color: var(--accent); border-color: var(--accent); }

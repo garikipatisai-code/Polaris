@@ -296,16 +296,7 @@ export default function App() {
         )}
 
         {messages.map((m, i) => (
-          <div key={i} className={`msg msg-${m.role}`}>
-            <div className="msg-text">{m.text}</div>
-            {m.stats && (
-              <div className="msg-stats">
-                {m.stats.genTokens ?? '?'} tokens ·{' '}
-                {m.stats.tokPerSec ? m.stats.tokPerSec.toFixed(1) : '?'} tok/s ·{' '}
-                {((m.stats.wallMs ?? 0) / 1000).toFixed(1)}s
-              </div>
-            )}
-          </div>
+          <MessageBubble key={i} m={m} />
         ))}
 
         {isStreaming && (
@@ -363,13 +354,13 @@ export default function App() {
             {agentRun.terminal?.phase === 'DONE' && agentRun.terminal.summary && (
               <div className="agent-summary">
                 <span className="agent-summary-label">Final answer:</span>
-                <div className="agent-summary-text">{agentRun.terminal.summary}</div>
+                <CollapsibleText text={agentRun.terminal.summary} className="agent-summary-text" />
               </div>
             )}
             {agentRun.terminal?.phase === 'ABORTED' && (
               <div className="agent-error">
                 <span className="agent-error-label">Aborted:</span>{' '}
-                {agentRun.terminal.error ?? 'unknown reason'}
+                <CollapsibleText text={agentRun.terminal.error ?? 'unknown reason'} inline />
               </div>
             )}
           </div>
@@ -468,7 +459,7 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
     case 'verdict':
       return <><span className="tag">verdict</span> {String(d.verdict ?? '?')}{d.reason ? ` — ${String(d.reason)}` : ''}</>;
     case 'error':
-      return <><span className="tag tag-error">error</span> {String(d.error ?? '?')}</>;
+      return <><span className="tag tag-error">error</span> {truncate(String(d.error ?? '?'), 120)}</>;
     default:
       return <>{e.type}</>;
   }
@@ -476,4 +467,66 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+/** Cap on visible text in a chat / agent-summary bubble before we offer a "show full" toggle. */
+const TEXT_VISIBLE_CAP = 2000;
+
+function MessageBubble({ m }: { m: ChatMsg }): JSX.Element {
+  return (
+    <div className={`msg msg-${m.role}`}>
+      <CollapsibleText text={m.text} className="msg-text" />
+      {m.stats && (
+        <div className="msg-stats">
+          {m.stats.genTokens ?? '?'} tokens ·{' '}
+          {m.stats.tokPerSec ? m.stats.tokPerSec.toFixed(1) : '?'} tok/s ·{' '}
+          {((m.stats.wallMs ?? 0) / 1000).toFixed(1)}s
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Renders text up to TEXT_VISIBLE_CAP chars; if longer, shows a truncated
+ * preview with a "Show full (Nk chars)" toggle. Prevents model misfires
+ * from dumping tens of KB into the panel without recourse.
+ */
+function CollapsibleText({
+  text,
+  className,
+  inline = false,
+}: {
+  text: string;
+  className?: string;
+  inline?: boolean;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const long = text.length > TEXT_VISIBLE_CAP;
+  const shown = !long || expanded ? text : text.slice(0, TEXT_VISIBLE_CAP) + '…';
+  const sizeLabel = text.length > 1024
+    ? `${(text.length / 1024).toFixed(1)} KB`
+    : `${text.length} chars`;
+  if (inline) {
+    return (
+      <>
+        <span className={className}>{shown}</span>
+        {long && (
+          <button className="collapsible-toggle" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? 'Collapse' : `Show full (${sizeLabel})`}
+          </button>
+        )}
+      </>
+    );
+  }
+  return (
+    <>
+      <div className={className}>{shown}</div>
+      {long && (
+        <button className="collapsible-toggle" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? 'Collapse' : `Show full (${sizeLabel})`}
+        </button>
+      )}
+    </>
+  );
 }
