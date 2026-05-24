@@ -81,24 +81,18 @@ in "Open questions" first.
 - `extension/` — full M1 scaffold (Vite + React + TS + CRXJS, 14 files)
 - `docs/research-notes.md` — literature survey
 - `ISSUES.md` — all four M1 issues now marked resolved
-- **M1.1 cleanup (this session):**
-  - Rewrote `service_worker.ts`: removed the wasteful probe-then-restream
-    pattern; single `chatStream` call; soft-warming "Loading model…"
-    notice via 3 s timer instead of 403 detection; cleaner error
-    messages that point at README's CORS setup for 403, network errors,
-    etc. `loadModel()` helper deleted.
-  - `DEFAULT_SETTINGS.ollamaBaseUrl` reverted to `http://localhost:11434`
-    (canonical; users may still override to a proxy URL if they want).
-  - Added "CORS setup (one-time, required)" section to README explaining
-    `OLLAMA_ORIGINS="chrome-extension://*"` via systemd or foreground.
-  - Updated `ISSUES.md`: all four issues now resolved with notes.
-  - Added `scripts/browser_smoke.py` — CDP-driven test that launches
-    Chrome with the unpacked extension and verifies SW + Ollama fetch
-    + chat round-trip end-to-end. Stdlib only.
-  - `.gitignore` extended to exclude tsc composite build artifacts
-    (`*.tsbuildinfo`, generated `manifest.d.ts/.js`, `vite.config.d.ts/.js`).
-  - `npm install` succeeded (118 packages); `npm run build` clean (4 KB
-    SW bundle, 147 KB sidepanel bundle, no errors).
+- **M1.1 cleanup:** removed wasteful probe-then-restream pattern, removed
+  loadModel, soft-warming via 3 s timer, `explainError()` helper, default
+  URL back to 11434, README CORS-setup section, ISSUES.md all-resolved
+- **M1.2:** warming notice rendered as separate ephemeral placeholder
+  (no longer concatenated into the streaming message buffer)
+- **M2.1 (state store + types):** persistent agent state schema, IDB stores
+  for scratchpad / findings / memory / events, hot state in
+  chrome.storage.local with structural goal-immutability (`startTask` refuses
+  while a non-terminal task exists; `patchHot` rejects `goal` field), ULID
+  generator, token budget helpers (chars/4 heuristic), dev hooks on
+  `globalThis.polaris` for SW-DevTools introspection. Deps added: `zod`,
+  `idb`. SW bundle 14.52 KB (5.58 KB gzipped).
 
 ### Browser test status (M1 + M1.1)
 
@@ -191,6 +185,16 @@ to decide budgets, not the 262 K theoretical context.
 
 ## Recent decisions (append at top — most recent first)
 
+- **2026-05-23 late night** M2 framework decision after research + planning
+  agents: **no LangGraph / LangChain / Mastra / Vercel AI SDK / XState**.
+  Reason: those frameworks target a different problem shape (cloud routing,
+  multi-provider, complex DAGs); for a constrained local agent with
+  hierarchical Planner/Executor/Evaluator + persistent external state, the
+  consensus is "thin LLM client + heavy custom orchestration." Adopted:
+  custom orchestration on a `phase` enum switch, **Zod** for schemas,
+  **`idb`** for IndexedDB, in-house cosine for embedding similarity,
+  chars/4 heuristic + Ollama `prompt_eval_count` reconciliation for token
+  counting. Bundle delta ~15 KB vs ~500 KB for a framework approach.
 - **2026-05-23 night** M1.1 cleanup committed. CORS strategy: canonical is
   `OLLAMA_ORIGINS="chrome-extension://*"` on the Ollama server (one env
   var, no extra process). The earlier Python proxy on port 11435 still

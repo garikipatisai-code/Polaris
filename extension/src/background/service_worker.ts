@@ -1,9 +1,25 @@
 // Polaris background service worker.
-// M1 scope: route messages between the side panel and Ollama. No agent loop yet.
+// M1 scope: route messages between the side panel and Ollama.
+// M2.1: persistent state store + types added; agent loop arrives in M2.3+.
 
 import { PORT_NAME, RequestMessage, ResponseMessage } from '../shared/messages';
 import { getSettings, setSettings } from './settings';
 import { OllamaClient, ChatMessage } from './ollama';
+import * as stateStore from '../agent/state_store';
+import * as idb from '../agent/idb';
+import * as budget from '../agent/budget';
+import { ulid } from '../agent/ulid';
+
+// Expose agent primitives on globalThis.polaris so the SW DevTools console
+// can introspect and exercise the store directly. Cheap in bundle terms;
+// invaluable for debugging.
+(globalThis as unknown as { polaris: unknown }).polaris = {
+  state: stateStore,
+  idb,
+  budget,
+  ulid,
+};
+console.log('[polaris] state primitives → globalThis.polaris');
 
 // Open the side panel when the toolbar icon is clicked.
 chrome.sidePanel
