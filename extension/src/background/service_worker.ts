@@ -10,6 +10,7 @@ import * as idb from '../agent/idb';
 import * as budget from '../agent/budget';
 import { ulid } from '../agent/ulid';
 import * as tools from '../agent/tools';
+import { Orchestrator } from '../agent/orchestrator';
 
 // Expose agent primitives on globalThis.polaris so the SW DevTools console
 // can introspect and exercise the store directly. Cheap in bundle terms;
@@ -30,6 +31,10 @@ chrome.sidePanel
 
 // One in-flight chat at a time; abort cancels current generation.
 let currentAbort: AbortController | null = null;
+
+// At most one Orchestrator instance per SW lifetime (single-task model per
+// M2 design). Set on agent.start, cleared on terminal phase.
+let currentOrchestrator: Orchestrator | null = null;
 
 // Show "Loading model…" status if the first token doesn't arrive within this window.
 // Cold loads of qwen3.5:4b take ~3–5s on the target hardware.
@@ -70,6 +75,19 @@ chrome.runtime.onConnect.addListener((port) => {
         }
         case 'chat.start': {
           await handleChat(port, msg.userText, msg.goal);
+          break;
+        }
+        case 'agent.start': {
+          await handleAgentStart(port, msg.goal);
+          break;
+        }
+        case 'agent.abort': {
+          await currentOrchestrator?.stop();
+          break;
+        }
+        case 'agent.getSnapshot': {
+          const state = await stateStore.loadHot();
+          send(port, { type: 'agent.snapshot', state });
           break;
         }
       }
@@ -185,4 +203,58 @@ function explainError(e: Error): string {
     );
   }
   return msg;
+}
+
+async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promise<void> {
+  if (currentOrchestrator) {
+    send(port, {
+      type: 'agent.terminal',
+      phase: 'ABORTED',
+      error: 'an agent task is already running — abort it first',
+    });
+    return;
+  }
+  const settings = await getSettings();
+  const client = new OllamaClient(settings.ollamaBaseUrl);
+
+  let lastSummary: string | undefined;
+  let lastError: string | undefined;
+
+  const orchestrator = new Orchestrator({
+    client,
+    model: settings.model,
+    onEvent: (event) => {
+      send(port, { type: 'agent.event', event });
+      if (event.type === 'verdict') {
+        const d = event.data as { summary?: string; verdict?: string; reason?: string } | undefined;
+        if (d?.verdict === 'done' && d.summary) lastSummary = d.summary;
+        if (d?.verdict === 'abort') lastError = d.reason ?? 'aborted';
+      }
+      if (event.type === 'error') {
+        const d = event.data as { error?: string } | undefined;
+        if (d?.error) lastError = d.error;
+      }
+    },
+  });
+  currentOrchestrator = orchestrator;
+
+  try {
+    const initial = await orchestrator.start(goal);
+    send(port, { type: 'agent.started', taskId: initial.taskId, goal: initial.goal.text });
+    const terminal = await orchestrator.runUntilTerminal();
+    send(port, {
+      type: 'agent.terminal',
+      phase: terminal.phase === 'DONE' ? 'DONE' : 'ABORTED',
+      summary: lastSummary,
+      error: lastError,
+    });
+  } catch (e) {
+    send(port, {
+      type: 'agent.terminal',
+      phase: 'ABORTED',
+      error: explainError(e as Error),
+    });
+  } finally {
+    currentOrchestrator = null;
+  }
 }

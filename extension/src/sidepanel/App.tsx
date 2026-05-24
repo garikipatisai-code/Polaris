@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  AgentEventPayload,
   ChatStats,
   DEFAULT_SETTINGS,
   PORT_NAME,
@@ -9,6 +10,13 @@ import {
 } from '../shared/messages';
 
 type ChatMsg = { role: 'user' | 'assistant'; text: string; stats?: ChatStats };
+
+interface AgentRun {
+  taskId: string;
+  goal: string;
+  events: AgentEventPayload[];
+  terminal: { phase: 'DONE' | 'ABORTED'; summary?: string; error?: string } | null;
+}
 
 export default function App() {
   const portRef = useRef<chrome.runtime.Port | null>(null);
@@ -21,6 +29,7 @@ export default function App() {
   const [streaming, setStreaming] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [warmingNotice, setWarmingNotice] = useState<string | null>(null);
+  const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connStatus, setConnStatus] = useState<'unknown' | 'ok' | 'fail'>('unknown');
   const [connError, setConnError] = useState<string | null>(null);
@@ -34,7 +43,6 @@ export default function App() {
     port.onMessage.addListener((msg: ResponseMessage) => {
       switch (msg.type) {
         case 'chat.chunk':
-          // First real token — clear any "Loading model…" placeholder.
           setWarmingNotice(null);
           setStreaming((prev) => prev + msg.content);
           break;
@@ -72,6 +80,22 @@ export default function App() {
           setConnError(msg.error ?? null);
           setAvailableModels(msg.models ?? []);
           break;
+        case 'agent.started':
+          setAgentRun({ taskId: msg.taskId, goal: msg.goal, events: [], terminal: null });
+          break;
+        case 'agent.event':
+          setAgentRun((run) => (run ? { ...run, events: [...run.events, msg.event] } : run));
+          break;
+        case 'agent.terminal':
+          setAgentRun((run) =>
+            run
+              ? { ...run, terminal: { phase: msg.phase, summary: msg.summary, error: msg.error } }
+              : run,
+          );
+          break;
+        case 'agent.snapshot':
+          // Not used directly in M2.3 UI; reserved for the PlanTree in M2.4+.
+          break;
       }
     });
 
@@ -84,7 +108,7 @@ export default function App() {
   // Auto-scroll the messages pane to the bottom on new content.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, streaming, warmingNotice]);
+  }, [messages, streaming, warmingNotice, agentRun]);
 
   function send(port: chrome.runtime.Port, msg: RequestMessage) {
     port.postMessage(msg);
@@ -105,6 +129,23 @@ export default function App() {
     });
   }
 
+  function startAgent() {
+    const goalText = (goal.trim() || input.trim());
+    if (!goalText || agentRun || !portRef.current) return;
+    setAgentRun({ taskId: '...', goal: goalText, events: [], terminal: null });
+    if (!goal.trim()) setInput('');
+    send(portRef.current, { type: 'agent.start', goal: goalText });
+  }
+
+  function abortAgent() {
+    if (!portRef.current) return;
+    send(portRef.current, { type: 'agent.abort' });
+  }
+
+  function clearAgent() {
+    setAgentRun(null);
+  }
+
   function abortStream() {
     if (!portRef.current) return;
     send(portRef.current, { type: 'chat.abort' });
@@ -123,6 +164,8 @@ export default function App() {
     setConnError(null);
     send(portRef.current, { type: 'ollama.ping' });
   }
+
+  const agentRunning = agentRun !== null && agentRun.terminal === null;
 
   return (
     <div className="polaris">
@@ -151,7 +194,12 @@ export default function App() {
         <div className="goal-banner">
           <span className="goal-label">Goal:</span>
           <span className="goal-text">{goal}</span>
-          <button className="goal-clear" onClick={() => setGoal('')} title="Clear goal">
+          <button
+            className="goal-clear"
+            onClick={() => setGoal('')}
+            title="Clear goal"
+            disabled={agentRunning}
+          >
             ×
           </button>
         </div>
@@ -205,12 +253,15 @@ export default function App() {
       )}
 
       <div className="messages" ref={scrollRef}>
-        {messages.length === 0 && !isStreaming && (
+        {messages.length === 0 && !isStreaming && !agentRun && (
           <div className="welcome">
-            <p>Ask anything to test the connection to your local model.</p>
-            <p className="muted">M1: chat only. The agent loop arrives in M2.</p>
+            <p>Ask anything to chat with your local model.</p>
+            <p className="muted">
+              Or type a goal and click <strong>Run agent</strong> for the M2 loop.
+            </p>
           </div>
         )}
+
         {messages.map((m, i) => (
           <div key={i} className={`msg msg-${m.role}`}>
             <div className="msg-text">{m.text}</div>
@@ -223,6 +274,7 @@ export default function App() {
             )}
           </div>
         ))}
+
         {isStreaming && (
           <div className="msg msg-assistant streaming">
             <div className="msg-text">
@@ -237,21 +289,71 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {agentRun && (
+          <div className={`agent-run ${agentRun.terminal ? `terminal-${agentRun.terminal.phase.toLowerCase()}` : 'running'}`}>
+            <div className="agent-run-head">
+              <span className="agent-run-label">{agentRun.terminal ? '★ Agent run' : '★ Polaris is working…'}</span>
+              {agentRunning && (
+                <button className="agent-abort" onClick={abortAgent}>
+                  Abort
+                </button>
+              )}
+              {agentRun.terminal && (
+                <button className="agent-clear" onClick={clearAgent}>
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="agent-goal">
+              <span className="agent-goal-label">Goal:</span> {agentRun.goal}
+            </div>
+            <ol className="agent-timeline">
+              {agentRun.events.map((e, i) => (
+                <li key={i} className={`agent-event agent-event-${e.type}`}>
+                  {renderEvent(e)}
+                </li>
+              ))}
+              {agentRunning && agentRun.events.length === 0 && (
+                <li className="agent-event agent-event-pending">
+                  <span className="warming">⋯ Starting up…</span>
+                </li>
+              )}
+            </ol>
+            {agentRun.terminal?.phase === 'DONE' && agentRun.terminal.summary && (
+              <div className="agent-summary">
+                <span className="agent-summary-label">Final answer:</span>
+                <div className="agent-summary-text">{agentRun.terminal.summary}</div>
+              </div>
+            )}
+            {agentRun.terminal?.phase === 'ABORTED' && (
+              <div className="agent-error">
+                <span className="agent-error-label">Aborted:</span>{' '}
+                {agentRun.terminal.error ?? 'unknown reason'}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="goal-input">
         <input
           type="text"
-          placeholder="Set a goal (optional) — Polaris will stay locked to it…"
+          placeholder="Set a goal — Polaris will stay locked to it…"
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
+          disabled={agentRunning}
         />
       </div>
 
       <div className="composer">
         <textarea
           rows={3}
-          placeholder="Type a message…  (Enter to send, Shift+Enter for newline)"
+          placeholder={
+            agentRunning
+              ? 'Polaris is working — press Abort to stop.'
+              : 'Type a message (Enter to send) — or set a goal above and click Run agent'
+          }
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -260,18 +362,72 @@ export default function App() {
               sendMessage();
             }
           }}
-          disabled={isStreaming}
+          disabled={isStreaming || agentRunning}
         />
         {isStreaming ? (
           <button className="send abort" onClick={abortStream}>
             Stop
           </button>
         ) : (
-          <button className="send" onClick={sendMessage} disabled={!input.trim()}>
-            Send
-          </button>
+          <div className="composer-buttons">
+            <button
+              className="send"
+              onClick={sendMessage}
+              disabled={!input.trim() || agentRunning}
+            >
+              Send
+            </button>
+            <button
+              className="send agent"
+              onClick={startAgent}
+              disabled={!(goal.trim() || input.trim()) || agentRunning || isStreaming}
+              title="Run as agent task (uses goal field or input as goal)"
+            >
+              🚀 Run agent
+            </button>
+          </div>
         )}
       </div>
     </div>
   );
+}
+
+function renderEvent(e: AgentEventPayload): JSX.Element {
+  const d = (e.data ?? {}) as Record<string, unknown>;
+  switch (e.type) {
+    case 'phase':
+      return <><span className="tag">phase</span> → {String(d.phase ?? '?')}</>;
+    case 'role_start':
+      return <><span className="tag">{String(d.role ?? '?')}</span> start{d.stepId ? ` (step ${String(d.stepId)})` : ''}</>;
+    case 'role_end': {
+      const ok = d.ok ? '✓' : '✗';
+      const retried = d.retried ? ' (retried)' : '';
+      const pt = d.promptTokens != null ? ` · ${String(d.promptTokens)}t in` : '';
+      const gt = d.genTokens != null ? ` / ${String(d.genTokens)}t out` : '';
+      return <><span className="tag">{String(d.role ?? '?')}</span> {ok}{retried}{pt}{gt}</>;
+    }
+    case 'tool_call': {
+      const args = d.args ? JSON.stringify(d.args) : '{}';
+      return <><span className="tag">tool</span> {String(d.name ?? '?')}({truncate(args, 60)})</>;
+    }
+    case 'tool_result': {
+      const ok = d.ok ? '✓' : '✗';
+      const summary = d.ok ? truncate(JSON.stringify(d.data ?? {}), 80) : String(d.error ?? '');
+      return <><span className="tag">→</span> {ok} {summary}</>;
+    }
+    case 'breaker':
+      return <><span className="tag">breaker</span> {String(d.reason ?? '?')}</>;
+    case 'compaction':
+      return <><span className="tag">compact</span> {String(d.discarded ?? '?')} discarded → {String(d.produced ?? '?')} findings</>;
+    case 'verdict':
+      return <><span className="tag">verdict</span> {String(d.verdict ?? '?')}{d.reason ? ` — ${String(d.reason)}` : ''}</>;
+    case 'error':
+      return <><span className="tag tag-error">error</span> {String(d.error ?? '?')}</>;
+    default:
+      return <>{e.type}</>;
+  }
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + '…' : s;
 }

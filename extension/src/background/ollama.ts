@@ -116,6 +116,36 @@ export class OllamaClient {
     }
   }
 
+  /**
+   * Non-streaming chat completion. Returns the full response in one shot.
+   * Use this when you only care about the final message (e.g., tool-call
+   * extraction or JSON-mode structured output); use chatStream for UX
+   * streaming.
+   */
+  async chatOnce(opts: ChatOptions): Promise<ChatChunk> {
+    const body: Record<string, unknown> = {
+      model: opts.model,
+      messages: opts.messages,
+      stream: false,
+    };
+    if (opts.tools) body.tools = opts.tools;
+    if (opts.format !== undefined) body.format = opts.format;
+    if (opts.think !== undefined) body.think = opts.think;
+    if (opts.options) body.options = opts.options;
+
+    const res = await fetch(this.url('/api/chat'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`Ollama chat HTTP ${res.status}: ${detail.slice(0, 200)}`);
+    }
+    return (await res.json()) as ChatChunk;
+  }
+
   async embed(model: string, input: string | string[]): Promise<number[][]> {
     const res = await fetch(this.url('/api/embed'), {
       method: 'POST',
