@@ -20,6 +20,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [streaming, setStreaming] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [warmingNotice, setWarmingNotice] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connStatus, setConnStatus] = useState<'unknown' | 'ok' | 'fail'>('unknown');
   const [connError, setConnError] = useState<string | null>(null);
@@ -33,9 +34,12 @@ export default function App() {
     port.onMessage.addListener((msg: ResponseMessage) => {
       switch (msg.type) {
         case 'chat.chunk':
+          // First real token — clear any "Loading model…" placeholder.
+          setWarmingNotice(null);
           setStreaming((prev) => prev + msg.content);
           break;
         case 'chat.complete':
+          setWarmingNotice(null);
           setStreaming((prev) => {
             if (prev) {
               setMessages((ms) => [...ms, { role: 'assistant', text: prev, stats: msg.stats }]);
@@ -45,6 +49,7 @@ export default function App() {
           setIsStreaming(false);
           break;
         case 'chat.error':
+          setWarmingNotice(null);
           setStreaming((prev) => {
             const text = prev
               ? prev + '\n\n[error: ' + msg.message + ']'
@@ -56,7 +61,7 @@ export default function App() {
           break;
         case 'chat.status':
           if (msg.status === 'warming') {
-            setStreaming((prev) => prev + '\n[Model loading… ' + msg.message + ']');
+            setWarmingNotice(msg.message);
           }
           break;
         case 'settings.value':
@@ -79,7 +84,7 @@ export default function App() {
   // Auto-scroll the messages pane to the bottom on new content.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, streaming]);
+  }, [messages, streaming, warmingNotice]);
 
   function send(port: chrome.runtime.Port, msg: RequestMessage) {
     port.postMessage(msg);
@@ -91,6 +96,7 @@ export default function App() {
     setMessages((ms) => [...ms, { role: 'user', text }]);
     setInput('');
     setStreaming('');
+    setWarmingNotice(null);
     setIsStreaming(true);
     send(portRef.current, {
       type: 'chat.start',
@@ -102,6 +108,7 @@ export default function App() {
   function abortStream() {
     if (!portRef.current) return;
     send(portRef.current, { type: 'chat.abort' });
+    setWarmingNotice(null);
     setIsStreaming(false);
   }
 
@@ -219,8 +226,14 @@ export default function App() {
         {isStreaming && (
           <div className="msg msg-assistant streaming">
             <div className="msg-text">
-              {streaming}
-              <span className="cursor">▋</span>
+              {warmingNotice && !streaming ? (
+                <span className="warming">⋯ {warmingNotice}</span>
+              ) : (
+                <>
+                  {streaming}
+                  <span className="cursor">▋</span>
+                </>
+              )}
             </div>
           </div>
         )}

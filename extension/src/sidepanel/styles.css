@@ -217,6 +217,20 @@ button { font-family: inherit; }
   50% { opacity: 0; }
 }
 
+.warming {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  animation: polaris-pulse 1.6s ease-in-out infinite;
+}
+@keyframes polaris-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 .goal-input {
   padding: 6px 14px;
   background: var(--surface);
