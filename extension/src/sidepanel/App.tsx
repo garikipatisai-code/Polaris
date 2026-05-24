@@ -50,12 +50,15 @@ export default function App() {
   const [connError, setConnError] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
 
-  // Open a long-lived port to the service worker on mount.
+  // Open a long-lived port to the service worker on mount, with auto-reconnect
+  // when the SW idle-kills the port (Chrome MV3 sweeps SWs after ~30s of no
+  // work — any stale postMessage then throws "disconnected port").
   useEffect(() => {
-    const port = chrome.runtime.connect({ name: PORT_NAME });
-    portRef.current = port;
+    let active = true;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    port.onMessage.addListener((msg: ResponseMessage) => {
+    const handleMessage = (msg: ResponseMessage) => {
+      if (!active) return;
       switch (msg.type) {
         case 'chat.chunk':
           setWarmingNotice(null);
@@ -163,13 +166,33 @@ export default function App() {
           }
           break;
       }
-    });
+    };
 
-    send(port, { type: 'settings.get' });
-    send(port, { type: 'ollama.ping' });
-    send(port, { type: 'agent.getSnapshot' });
+    const connect = () => {
+      if (!active) return;
+      const port = chrome.runtime.connect({ name: PORT_NAME });
+      portRef.current = port;
+      port.onMessage.addListener(handleMessage);
+      port.onDisconnect.addListener(() => {
+        portRef.current = null;
+        if (!active) return;
+        const reason = chrome.runtime.lastError?.message ?? 'idle';
+        console.warn(`[polaris] background port disconnected (${reason}) — reconnecting in 500ms`);
+        reconnectTimer = setTimeout(connect, 500);
+      });
+      sendOn(port, { type: 'settings.get' });
+      sendOn(port, { type: 'ollama.ping' });
+      sendOn(port, { type: 'agent.getSnapshot' });
+    };
 
-    return () => port.disconnect();
+    connect();
+
+    return () => {
+      active = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      portRef.current?.disconnect();
+      portRef.current = null;
+    };
   }, []);
 
   // Auto-scroll the messages pane to the bottom on new content.
@@ -185,8 +208,25 @@ export default function App() {
     return () => clearInterval(interval);
   }, [lastRoleStartAt]);
 
-  function send(port: chrome.runtime.Port, msg: RequestMessage) {
-    port.postMessage(msg);
+  function sendOn(port: chrome.runtime.Port, msg: RequestMessage): boolean {
+    try {
+      port.postMessage(msg);
+      return true;
+    } catch (e) {
+      console.warn(`[polaris] postMessage(${msg.type}) failed — port disconnected`, e);
+      portRef.current = null;
+      return false;
+    }
+  }
+
+  /** Send a message to the SW, tolerating a disconnected port. Returns success. */
+  function send(_port: chrome.runtime.Port | null, msg: RequestMessage): boolean {
+    const port = portRef.current;
+    if (!port) {
+      console.warn(`[polaris] no active port; dropping message: ${msg.type}`);
+      return false;
+    }
+    return sendOn(port, msg);
   }
 
   function sendMessage() {

@@ -330,6 +330,24 @@ async function handleAgentResume(port: chrome.runtime.Port): Promise<void> {
     return;
   }
 
+  // Tell the panel about the run BEFORE the orchestrator emits any events.
+  // Otherwise the orchestrator's first event (phase resume) arrives while
+  // agentRun is still null and gets dropped by the panel's event handler.
+  send(port, { type: 'agent.started', taskId: state.taskId, goal: state.goal.text });
+  send(port, {
+    type: 'agent.event',
+    event: {
+      type: 'role_end',
+      data: {
+        role: 'planner',
+        ok: true,
+        plan: state.plan,
+        successCriteria: state.goal.successCriteria,
+        resumed: true,
+      },
+    },
+  });
+
   const settings = await getSettings();
   const client = new OllamaClient(settings.ollamaBaseUrl);
 
@@ -357,22 +375,7 @@ async function handleAgentResume(port: chrome.runtime.Port): Promise<void> {
   currentOrchestrator = orchestrator;
 
   try {
-    const resumed = await orchestrator.resume();
-    send(port, { type: 'agent.started', taskId: resumed.taskId, goal: resumed.goal.text });
-    // Re-emit a synthetic role_end(planner) so the panel populates plan + criteria.
-    send(port, {
-      type: 'agent.event',
-      event: {
-        type: 'role_end',
-        data: {
-          role: 'planner',
-          ok: true,
-          plan: resumed.plan,
-          successCriteria: resumed.goal.successCriteria,
-          resumed: true,
-        },
-      },
-    });
+    await orchestrator.resume();
     const terminal = await orchestrator.runUntilTerminal();
     send(port, {
       type: 'agent.terminal',
