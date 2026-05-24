@@ -18,8 +18,9 @@ In active development. Currently:
 
 - ✅ Architecture designed (hierarchical agent + persistent state + ARIA-tree extraction + vision-grounded verification)
 - ✅ Capability probe written and verified against Qwen3.5-4B on real hardware
-- ✅ **M1 — extension skeleton + Ollama wiring + streaming chat in side panel** (this commit)
-- ⏳ **M2 — hierarchical agent loop with mock tools — next**
+- ✅ **M1** — extension skeleton + Ollama wiring + streaming chat in side panel
+- ✅ **M2** — full agent loop (Planner / Executor / Evaluator / Compactor) with persistent state, step advancement, circuit breaker, watchdog, crash-resume, and 73 unit + integration tests proving goal byte-survival across replan
+- ⏳ **M3** — real browser tools (ARIA-tree extractor, tab management, screenshot vision fallback) — next
 
 ## Hardware
 
@@ -96,6 +97,18 @@ OLLAMA_ORIGINS="chrome-extension://*" ollama serve
 
 You can also use a wider value like `OLLAMA_ORIGINS="*"` for testing, but pin it to `chrome-extension://*` in production to avoid exposing your local Ollama to arbitrary websites.
 
+## Run the test suite
+
+The agent's pure logic and orchestrator state machine are covered by Vitest:
+
+```bash
+cd extension
+npm test           # one-shot run
+npm run test:watch # watch mode
+```
+
+73 tests: `walkPlan`, `actionHash`/`stableStringify`, `parseJSONPermissive`, the circuit breaker (`evaluate`, `recordAfter`, `resetForReplan`, `recordTrip`), budget helpers, ULID, state-store lifecycle (including the goal-immutability and forward-fill-migration contracts), and 5 orchestrator end-to-end integration tests with a scripted fake Ollama client. The latter prove — among other things — that goal text is byte-equal at terminal phase even across replan + retry cycles, no real model required.
+
 ## Run the capability probe
 
 Verifies your local Qwen3.5-4B has everything Polaris needs.
@@ -158,11 +171,17 @@ See [`docs/research-notes.md`](docs/research-notes.md) for the literature survey
 
 ## Roadmap
 
-- **M1** — Extension scaffold (MV3, side panel, service worker), Ollama HTTP client, basic chat round-trip
-- **M2** — Agent loop with mock tools (validate Planner/Executor/Evaluator + compactor)
-- **M3** — Real browser tools (ARIA-tree extractor, tab management, screenshot vision fallback)
-- **M4** — Shopping domain (retailer adapters, coupon lookup, deal ranking UI)
-- **M5** — Polish (price history, error recovery, onboarding, settings)
+- **M1** ✅ Extension scaffold (MV3, side panel, service worker), Ollama HTTP client, basic chat round-trip
+- **M2** ✅ Full agent loop:
+  - Planner / Executor / Evaluator / Compactor roles with thinking-mode toggles
+  - Persistent state in `chrome.storage.local` + IndexedDB; goal text byte-immutable across replan
+  - Step advancement via `next_step` tool; force-advance after 8 turns
+  - Circuit breaker (action repetition, max replans), chrome.alarms watchdog, crash-resume with event replay
+  - Mock tools (`echo`, `add`, `sum`, `delay`, `next_step`, `finish`, `memory.read/write/list`)
+  - 73 tests: pure-function unit tests + orchestrator integration tests with a scripted fake Ollama client (no model dependency)
+- **M3** Real browser tools (ARIA-tree extractor, tab management, screenshot vision fallback)
+- **M4** Shopping domain (retailer adapters, coupon lookup, deal ranking UI)
+- **M5** Polish (price history, error recovery, onboarding, settings)
 
 ## Stack
 

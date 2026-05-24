@@ -190,13 +190,18 @@ export async function clearHot(): Promise<void> {
 
 /**
  * Set the goal's successCriteria list ONCE during initial planning. Refuses
- * if the criteria list is already populated — replan iterations must NOT
- * extend the criteria, only the initial Planner call may. Goal text itself
- * remains immutable in all cases.
+ * if the criteria list is already populated. Empty input is a no-op (does
+ * not "consume" the one-shot guard) — only a non-empty write transitions
+ * the goal from "criteria unset" to "criteria set". Goal text remains
+ * immutable in all cases.
  */
 export async function appendSuccessCriteria(criteria: string[]): Promise<AgentStateHot> {
   const current = await loadHot();
   if (!current) throw new Error('no hot state');
+  if (criteria.length === 0) {
+    // No-op: an empty list write should not transition state.
+    return current;
+  }
   if (current.goal.successCriteria.length > 0) {
     throw new Error(
       'cannot extend successCriteria: already set during initial planning ' +

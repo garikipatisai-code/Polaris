@@ -25,9 +25,11 @@ each decision see [`docs/research-notes.md`](docs/research-notes.md).
 
 ## Roadmap
 
-- **M1 — extension scaffold + Ollama streaming chat** ✅ **DONE**
-- **M2 — hierarchical agent loop with mock tools** ← *next*
-- **M3 — real browser tools (ARIA tree, tab manager, screenshot vision)**
+- **M1 — extension scaffold + Ollama streaming chat** ✅ DONE
+- **M2 — full agent loop (Planner / Executor / Evaluator / Compactor + breaker + watchdog + crash-resume)** ✅ DONE
+  - 73 tests pass — pure-function units + orchestrator integration with scripted fake Ollama client
+  - Goal byte-survival across replan empirically validated
+- **M3 — real browser tools (ARIA tree, tab manager, screenshot vision)** ← next
 - **M4 — shopping domain (retailer adapters, coupons, deal ranking UI)**
 - **M5 — polish (price history, error recovery, onboarding, icons)**
 
@@ -69,30 +71,47 @@ in "Open questions" first.
 
 ## Current state — UPDATE THIS WHEN YOU FINISH WORK
 
-**Last touched:** 2026-05-23 evening (Mac, Claude Opus 4.7)
-**Last commit pulled in:** Linux session's `ISSUES.md` + service-worker 403 retry
-**Local changes (uncommitted):** M1.1 cleanup — see "What's done" below
+**Last touched:** 2026-05-24 (Mac, Claude Opus 4.7)
+**Last shipped:** M2.7.1 — Vitest backend validation suite (73 tests passing)
 **Current branch:** main
 
 ### What's done
 
-- `probe.py` — comprehensive capability probe; ran on Linux, all critical
-  features verified (see [Hardware-specific notes](#hardware-specific-notes))
-- `extension/` — full M1 scaffold (Vite + React + TS + CRXJS, 14 files)
+- `probe.py` — capability probe verified on Linux box (38 tok/s, needle@128K passes, vision works ≥1200 px)
+- `extension/` — full agent stack:
+  - **M1:** scaffold (Vite + React + TS + CRXJS, side panel, service worker, Ollama client, settings)
+  - **M2:** Planner / Executor / Evaluator / Compactor roles with prompts, JSON-mode + Zod validation, permissive JSON extractor, thinking-mode toggle per role
+  - **M2 state:** `chrome.storage.local` for hot state (goal-immutable via private `_setHot` + structural `patchHot` guard + one-shot `appendSuccessCriteria` with empty-input no-op fix), IndexedDB for scratchpad/findings/memory/events; forward-fill migration on `loadHot` so legacy state interacts with new safety code
+  - **M2 safety:** circuit breaker (action repetition, no-progress, max-3 replans), chrome.alarms watchdog (5 min stale), crash-resume with event replay from IDB, port auto-reconnect with message queue, defensive empty-finalAnswer override
+  - **M2 tools:** `echo`, `add`, `sum`, `delay`, `next_step`, `finish`, `memory.read/write/list` — Zod-validated, JSON Schema for Ollama
+  - **M2 plan-walking:** `next_step` tool advances `currentStepId`; force-advance after 8 turns; `walkPlan` updates step status; advance past last step routes to EVALUATING
+  - **M2 logging:** in-memory ring buffer (1000 entries) with categories, exposed at `globalThis.polaris.dumpLogs()`
+  - **M2.7.1 (NEW): Vitest test suite — 73 passing tests:**
+    - Unit tests for `walkPlan`, `actionHash`/`stableStringify`, `parseJSONPermissive`, `circuit_breaker.*`, `budget.*`, `ulid`, `state_store.*` (including the goal-immutability and forward-fill-migration contracts)
+    - 5 orchestrator end-to-end integration tests with a scripted fake Ollama client (per-role response queues; defaults for compactor)
+    - **Goal byte-survival across replan empirically validated** in test (`tests/orchestrator.test.ts`); the project's central architectural claim is no longer aspirational
 - `docs/research-notes.md` — literature survey
-- `ISSUES.md` — all four M1 issues now marked resolved
-- **M1.1 cleanup:** removed wasteful probe-then-restream pattern, removed
-  loadModel, soft-warming via 3 s timer, `explainError()` helper, default
-  URL back to 11434, README CORS-setup section, ISSUES.md all-resolved
-- **M1.2:** warming notice rendered as separate ephemeral placeholder
-  (no longer concatenated into the streaming message buffer)
-- **M2.1 (state store + types):** persistent agent state schema, IDB stores
-  for scratchpad / findings / memory / events, hot state in
-  chrome.storage.local with structural goal-immutability (`startTask` refuses
-  while a non-terminal task exists; `patchHot` rejects `goal` field), ULID
-  generator, token budget helpers (chars/4 heuristic), dev hooks on
-  `globalThis.polaris` for SW-DevTools introspection. Deps added: `zod`,
-  `idb`. SW bundle 14.52 KB (5.58 KB gzipped).
+- `ISSUES.md` — original M1 CORS issues, all resolved
+
+### What's next (M3 work list)
+
+- [ ] **User: smoke-test M2 in Chrome end-to-end** with the canonical task (`store the numbers 17, 25, and 8 in memory namespace 'nums' under keys a b c, read them back, finish with their sum`) — should now show step transitions in the plan tree, ≥1 compaction event mid-run, and a correct sum
+- [ ] **ARIA-tree extractor** via `chrome.debugger` — replaces raw HTML for the model
+- [ ] **Tab manager** (open / extract / close / screenshot) — service worker controls real tabs
+- [ ] **Screenshot vision tool** — calls `qwen3.5:4b` vision with a captured page region; verifier pattern
+- [ ] **Retailer adapters:** Amazon, Walmart, Best Buy, Target — page-specific extractors returning structured product JSON
+- [ ] **Search tool** — DuckDuckGo HTML scrape or Google Shopping fallback
+
+### Open questions / blockers
+
+- None blocking M3. The agent loop is provably correct on its core invariants (goal survival, replan cap, step advance) via the test suite. M3 work proceeds against a stable foundation.
+
+### Acknowledged debt (Tier C from the arch-nemesis pass)
+
+- Watchdog `setInterval` lastTouch bumper still not added (5-min threshold tolerates this for now).
+- Breaker progress signal still uses findings-growth — should be replaced with distinct-action-count over a window.
+- Tokenizer accuracy is `chars/4` heuristic; documented as advisory.
+- Resume event replay sends N events as N postMessages (should batch).
 
 ### Browser test status (M1 + M1.1)
 
