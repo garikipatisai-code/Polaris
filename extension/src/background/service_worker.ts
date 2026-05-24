@@ -9,6 +9,7 @@ import * as stateStore from '../agent/state_store';
 import * as idb from '../agent/idb';
 import * as budget from '../agent/budget';
 import { ulid } from '../agent/ulid';
+import * as tools from '../agent/tools';
 
 // Expose agent primitives on globalThis.polaris so the SW DevTools console
 // can introspect and exercise the store directly. Cheap in bundle terms;
@@ -18,8 +19,9 @@ import { ulid } from '../agent/ulid';
   idb,
   budget,
   ulid,
+  tools,
 };
-console.log('[polaris] state primitives → globalThis.polaris');
+console.log('[polaris] state + tools primitives → globalThis.polaris');
 
 // Open the side panel when the toolbar icon is clicked.
 chrome.sidePanel
