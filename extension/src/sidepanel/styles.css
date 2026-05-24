@@ -235,6 +235,7 @@ button { font-family: inherit; }
   padding: 6px 14px;
   background: var(--surface);
   border-top: 1px solid var(--border);
+  position: relative;
 }
 .goal-input input {
   width: 100%;
@@ -247,6 +248,22 @@ button { font-family: inherit; }
   font-size: 13px;
 }
 .goal-input input:focus { outline: 1px solid var(--accent); }
+
+.mode-indicator {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--accent);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+  letter-spacing: 0.02em;
+}
+.goal-input input:has(+ .mode-indicator) { padding-right: 110px; }
 
 .composer {
   display: flex;
@@ -280,8 +297,8 @@ button { font-family: inherit; }
 }
 .send:disabled { opacity: 0.5; cursor: not-allowed; }
 .send.abort { background: var(--error); }
-.send.agent { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-.send.agent:hover:not(:disabled) { background: var(--accent-soft); }
+.send.agent { background: var(--accent); color: white; }
+.send.agent:hover:not(:disabled) { filter: brightness(1.05); }
 
 .composer-buttons {
   display: flex;

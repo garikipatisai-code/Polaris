@@ -153,11 +153,11 @@ export default function App() {
   }
 
   function startAgent() {
-    const goalText = (goal.trim() || input.trim());
+    const goalText = goal.trim();
     if (!goalText || agentRunning || !portRef.current) return;
     // Auto-clear any prior terminal run so the new one renders fresh.
     setAgentRun({ taskId: '...', goal: goalText, events: [], terminal: null });
-    if (!goal.trim()) setInput('');
+    setInput('');
     send(portRef.current, { type: 'agent.start', goal: goalText });
   }
 
@@ -175,6 +175,15 @@ export default function App() {
     send(portRef.current, { type: 'chat.abort' });
     setWarmingNotice(null);
     setIsStreaming(false);
+  }
+
+  /** Single primary action: send chat if no goal, run agent if goal is set. */
+  function onPrimaryAction() {
+    if (goal.trim()) {
+      startAgent();
+    } else {
+      sendMessage();
+    }
   }
 
   function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
@@ -281,7 +290,7 @@ export default function App() {
           <div className="welcome">
             <p>Ask anything to chat with your local model.</p>
             <p className="muted">
-              Or type a goal and click <strong>Run agent</strong> for the M2 loop.
+              Or set a <strong>goal</strong> in the field above to switch to <strong>agent mode</strong>.
             </p>
           </div>
         )}
@@ -370,11 +379,16 @@ export default function App() {
       <div className="goal-input">
         <input
           type="text"
-          placeholder="Set a goal — Polaris will stay locked to it…"
+          placeholder="Set a goal to switch to agent mode (leave empty to chat)…"
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           disabled={agentRunning}
         />
+        {goal.trim() && !agentRunning && (
+          <span className="mode-indicator" title="Send button will run as an agent task because a goal is set">
+            🚀 agent mode
+          </span>
+        )}
       </div>
 
       <div className="composer">
@@ -383,14 +397,16 @@ export default function App() {
           placeholder={
             agentRunning
               ? 'Polaris is working — press Abort to stop.'
-              : 'Type a message (Enter to send) — or set a goal above and click Run agent'
+              : goal.trim()
+                ? 'Optional: extra notes for the agent (the goal above is the primary input)'
+                : 'Type a message (Enter to send)'
           }
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              sendMessage();
+              onPrimaryAction();
             }
           }}
           disabled={isStreaming || agentRunning}
@@ -399,24 +415,23 @@ export default function App() {
           <button className="send abort" onClick={abortStream}>
             Stop
           </button>
+        ) : goal.trim() ? (
+          <button
+            className="send agent"
+            onClick={startAgent}
+            disabled={agentRunning}
+            title="Run as an agent task with the goal above"
+          >
+            🚀 Run agent
+          </button>
         ) : (
-          <div className="composer-buttons">
-            <button
-              className="send"
-              onClick={sendMessage}
-              disabled={!input.trim() || agentRunning}
-            >
-              Send
-            </button>
-            <button
-              className="send agent"
-              onClick={startAgent}
-              disabled={!(goal.trim() || input.trim()) || agentRunning || isStreaming}
-              title="Run as agent task (uses goal field or input as goal)"
-            >
-              🚀 Run agent
-            </button>
-          </div>
+          <button
+            className="send"
+            onClick={sendMessage}
+            disabled={!input.trim() || agentRunning}
+          >
+            Send
+          </button>
         )}
       </div>
     </div>
