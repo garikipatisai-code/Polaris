@@ -6,17 +6,22 @@
 // summarized. Burning ~60 tokens per turn on verbatim goal re-injection
 // is the architecture's load-bearing thesis.
 
-import type { ScratchEntry, Finding } from '../../shared/agent_types';
+import type { Plan, ScratchEntry, Finding } from '../../shared/agent_types';
 
 export interface ExecutorPromptInput {
   goal: string;
-  step: { id?: string; title: string; rationale?: string } | null;
+  plan: Plan;
+  activeStepId: string | null;
   relevantFindings: Finding[];
   scratchTail: ScratchEntry[];
   availableToolNames: string[];
 }
 
 export function executorSystemPrompt(input: ExecutorPromptInput): string {
+  const planBlock = input.plan.rootSteps.length === 0
+    ? '(no plan — improvise toward the goal)'
+    : renderPlanForExecutor(input.plan, input.activeStepId);
+
   const findingsBlock = input.relevantFindings.length === 0
     ? '(none yet)'
     : input.relevantFindings.slice(0, 8).map((f) => `- ${f.key}: ${f.value}`).join('\n');
@@ -25,16 +30,13 @@ export function executorSystemPrompt(input: ExecutorPromptInput): string {
     ? '(no prior actions)'
     : input.scratchTail.map(compactScratch).join('\n');
 
-  const stepBlock = input.step
-    ? `CURRENT STEP: ${input.step.title}${input.step.rationale ? `\nWHY: ${input.step.rationale}` : ''}`
-    : 'CURRENT STEP: (no plan — improvise toward the goal)';
-
   return `You are the EXECUTOR for Polaris, a focused local browser agent.
 
 GOAL (verbatim, never modify or restate in your output):
   "${input.goal}"
 
-${stepBlock}
+PLAN:
+${planBlock}
 
 RELEVANT FINDINGS:
 ${findingsBlock}
@@ -46,11 +48,28 @@ AVAILABLE TOOLS: ${input.availableToolNames.join(', ')}.
 
 RULES:
 - Call exactly ONE tool per turn. Never two.
-- If the current step is satisfied by what you already know, call \`finish\`
+- Work through the plan in order. Use the recent actions to know what's
+  already done — don't repeat steps.
+- If every step is satisfied by what's already been done, call \`finish\`
   with a final summary.
 - Never reply in prose. Never invent tool names. Never restate the goal.
-- If you have already called a tool with the same arguments recently and
-  it produced an error, try a different tool or different arguments.`;
+- If you already called a tool with the same arguments and it produced
+  an error, try a different tool or different arguments.`;
+}
+
+function renderPlanForExecutor(plan: Plan, activeStepId: string | null): string {
+  const lines: string[] = [];
+  for (const s of plan.rootSteps) {
+    const marker = s.id === activeStepId ? '►' : ' ';
+    lines.push(`${marker} ${s.id} [${s.status}] ${s.title}${s.rationale ? ` — ${s.rationale}` : ''}`);
+    if (s.children) {
+      for (const c of s.children) {
+        const cMarker = c.id === activeStepId ? '►' : ' ';
+        lines.push(`  ${cMarker} ${c.id} [${c.status}] ${c.title}`);
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 function compactScratch(e: ScratchEntry): string {

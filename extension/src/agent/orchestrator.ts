@@ -13,29 +13,13 @@
 import type { OllamaClient } from '../background/ollama';
 import { ToolRegistry, createDefaultRegistry } from './tools';
 import { runExecutor } from './roles/executor';
+import { runPlanner } from './roles/planner';
 import * as store from './state_store';
 import type {
   AgentStateHot,
-  Plan,
   AgentEventType,
 } from '../shared/agent_types';
 import { SPECIAL_TOOLS } from './tools';
-
-/** Hardcoded plan used in M2.3 until the Planner role lands in M2.4. */
-function hardcodedPlan(now: number): Plan {
-  return {
-    rootSteps: [
-      {
-        id: 's1',
-        title: 'Use available tools to satisfy the goal, then call finish.',
-        status: 'active',
-      },
-    ],
-    revision: 1,
-    generatedAt: now,
-    notes: '[M2.3 placeholder plan — Planner role arrives in M2.4]',
-  };
-}
 
 export interface OrchestratorEvent {
   type: AgentEventType;
@@ -70,18 +54,68 @@ export class Orchestrator {
 
   /**
    * Begin a new task with the given verbatim goal. Throws if a task is
-   * already in a non-terminal phase. Transitions IDLE → PLANNING → EXECUTING
-   * (skipping real PLANNING for M2.3).
+   * already in a non-terminal phase. Transitions IDLE → PLANNING (real
+   * Planner call) → EXECUTING (or → ABORTED on planner failure).
    */
   async start(goalText: string): Promise<AgentStateHot> {
     this.abort = new AbortController();
     const fresh = await store.startTask(goalText);
     await this.emit(fresh.taskId, 'phase', { phase: 'PLANNING' });
-    // M2.3: skip real planning, jump straight to EXECUTING with hardcoded plan.
+    await this.emit(fresh.taskId, 'role_start', { role: 'planner' });
+
+    const result = await runPlanner({
+      state: fresh,
+      registry: this.registry,
+      client: this.client,
+      model: this.model,
+      signal: this.abort.signal,
+      isInitial: true,
+    });
+
+    if (!result.ok || !result.plan) {
+      const aborted = await store.patchHot({ phase: 'ABORTED' });
+      await this.emit(aborted.taskId, 'role_end', {
+        role: 'planner',
+        ok: false,
+        error: result.error,
+        promptTokens: result.promptTokens,
+        genTokens: result.genTokens,
+        retried: result.retried,
+      });
+      await this.emit(aborted.taskId, 'error', {
+        error: `planner failed: ${result.error ?? 'unknown'}`,
+      });
+      return aborted;
+    }
+
+    // Persist success criteria (only on first plan; goal text stays immutable).
+    let afterCriteria = fresh;
+    if (result.successCriteria && result.successCriteria.length > 0) {
+      afterCriteria = await store.appendSuccessCriteria(result.successCriteria);
+    }
+
     const planned = await store.patchHot({
+      plan: result.plan,
+      currentStepId: result.plan.rootSteps[0]?.id ?? null,
       phase: 'EXECUTING',
-      plan: hardcodedPlan(Date.now()),
-      currentStepId: 's1',
+      budgets: {
+        ...afterCriteria.budgets,
+        planner: {
+          ...afterCriteria.budgets.planner,
+          used: afterCriteria.budgets.planner.used + result.promptTokens,
+        },
+        totalTokens:
+          afterCriteria.budgets.totalTokens + result.promptTokens + result.genTokens,
+      },
+    });
+    await this.emit(planned.taskId, 'role_end', {
+      role: 'planner',
+      ok: true,
+      plan: result.plan,
+      successCriteria: planned.goal.successCriteria,
+      promptTokens: result.promptTokens,
+      genTokens: result.genTokens,
+      retried: result.retried,
     });
     await this.emit(planned.taskId, 'phase', { phase: 'EXECUTING' });
     return planned;
@@ -128,7 +162,6 @@ export class Orchestrator {
 
     const result = await runExecutor({
       state,
-      step,
       registry: this.registry,
       client: this.client,
       model: this.model,

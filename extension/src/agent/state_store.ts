@@ -143,6 +143,26 @@ export async function clearHot(): Promise<void> {
   await chrome.storage.local.remove(HOT_KEY);
 }
 
+/**
+ * Extend the goal's successCriteria list. The Planner emits these on the
+ * first plan; subsequent replans omit them. Goal text itself remains
+ * immutable. Capped at 20 entries total.
+ */
+export async function appendSuccessCriteria(criteria: string[]): Promise<AgentStateHot> {
+  const current = await loadHot();
+  if (!current) throw new Error('no hot state');
+  const updated: AgentStateHot = {
+    ...current,
+    goal: {
+      ...current.goal,
+      successCriteria: [...current.goal.successCriteria, ...criteria].slice(0, 20),
+    },
+    lastTouch: Date.now(),
+  };
+  await setHot(updated);
+  return updated;
+}
+
 // ============================================================================
 // Scratchpad (IDB, per-task FIFO)
 // ============================================================================

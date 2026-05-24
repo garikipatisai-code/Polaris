@@ -8,12 +8,15 @@ import {
   ResponseMessage,
   Settings,
 } from '../shared/messages';
+import type { Plan, PlanStep } from '../shared/agent_types';
 
 type ChatMsg = { role: 'user' | 'assistant'; text: string; stats?: ChatStats };
 
 interface AgentRun {
   taskId: string;
   goal: string;
+  plan: Plan | null;
+  successCriteria: string[];
   events: AgentEventPayload[];
   terminal: { phase: 'DONE' | 'ABORTED'; summary?: string; error?: string } | null;
 }
@@ -83,7 +86,14 @@ export default function App() {
           setAvailableModels(msg.models ?? []);
           break;
         case 'agent.started':
-          setAgentRun({ taskId: msg.taskId, goal: msg.goal, events: [], terminal: null });
+          setAgentRun({
+            taskId: msg.taskId,
+            goal: msg.goal,
+            plan: null,
+            successCriteria: [],
+            events: [],
+            terminal: null,
+          });
           setLastRoleStartAt(null);
           break;
         case 'agent.event':
@@ -97,6 +107,25 @@ export default function App() {
             msg.event.type === 'error'
           ) {
             setLastRoleStartAt(null);
+          }
+          // Pull Plan + successCriteria out of the planner's role_end event.
+          if (msg.event.type === 'role_end') {
+            const d = msg.event.data as
+              | { role?: string; plan?: Plan; successCriteria?: string[] }
+              | undefined;
+            if (d?.role === 'planner' && d.plan) {
+              setAgentRun((run) =>
+                run
+                  ? {
+                      ...run,
+                      plan: d.plan ?? run.plan,
+                      successCriteria: d.successCriteria ?? run.successCriteria,
+                      events: [...run.events, msg.event],
+                    }
+                  : run,
+              );
+              break;
+            }
           }
           setAgentRun((run) => (run ? { ...run, events: [...run.events, msg.event] } : run));
           break;
@@ -156,7 +185,14 @@ export default function App() {
     const goalText = goal.trim();
     if (!goalText || agentRunning || !portRef.current) return;
     // Auto-clear any prior terminal run so the new one renders fresh.
-    setAgentRun({ taskId: '...', goal: goalText, events: [], terminal: null });
+    setAgentRun({
+      taskId: '...',
+      goal: goalText,
+      plan: null,
+      successCriteria: [],
+      events: [],
+      terminal: null,
+    });
     setInput('');
     send(portRef.current, { type: 'agent.start', goal: goalText });
   }
@@ -346,6 +382,19 @@ export default function App() {
             <div className="agent-goal">
               <span className="agent-goal-label">Goal:</span> {agentRun.goal}
             </div>
+            {agentRun.successCriteria.length > 0 && (
+              <div className="agent-criteria">
+                <span className="agent-criteria-label">Success criteria:</span>
+                <ul>
+                  {agentRun.successCriteria.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {agentRun.plan && agentRun.plan.rootSteps.length > 0 && (
+              <PlanView plan={agentRun.plan} />
+            )}
             <ol className="agent-timeline">
               {agentRun.events.map((e, i) => (
                 <li key={i} className={`agent-event agent-event-${e.type}`}>
@@ -543,4 +592,52 @@ function CollapsibleText({
       )}
     </>
   );
+}
+
+/** Hierarchical plan view — one level of nesting, status pills, rev number. */
+function PlanView({ plan }: { plan: Plan }): JSX.Element {
+  return (
+    <div className="agent-plan">
+      <div className="agent-plan-head">
+        <span className="agent-plan-label">Plan</span>
+        <span className="agent-plan-rev">rev {plan.revision}</span>
+      </div>
+      <ol className="agent-plan-tree">
+        {plan.rootSteps.map((s) => (
+          <PlanStepView key={s.id} step={s} />
+        ))}
+      </ol>
+      {plan.notes && <div className="agent-plan-notes">{plan.notes}</div>}
+    </div>
+  );
+}
+
+function PlanStepView({ step }: { step: PlanStep }): JSX.Element {
+  return (
+    <li className={`plan-step plan-step-${step.status}`}>
+      <div className="plan-step-row">
+        <span className={`plan-step-status status-${step.status}`}>{statusIcon(step.status)}</span>
+        <span className="plan-step-id">{step.id}</span>
+        <span className="plan-step-title">{step.title}</span>
+      </div>
+      {step.rationale && <div className="plan-step-rationale">{step.rationale}</div>}
+      {step.children && step.children.length > 0 && (
+        <ol className="plan-children">
+          {step.children.map((c) => (
+            <PlanStepView key={c.id} step={c} />
+          ))}
+        </ol>
+      )}
+    </li>
+  );
+}
+
+function statusIcon(s: PlanStep['status']): string {
+  switch (s) {
+    case 'done': return '✓';
+    case 'active': return '►';
+    case 'skipped': return '~';
+    case 'failed': return '✗';
+    case 'pending': default: return '○';
+  }
 }

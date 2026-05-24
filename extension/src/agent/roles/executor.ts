@@ -10,7 +10,7 @@
 
 import type { OllamaClient } from '../../background/ollama';
 import type { ToolRegistry, ToolContext } from '../tools';
-import type { AgentStateHot, PlanStep } from '../../shared/agent_types';
+import type { AgentStateHot } from '../../shared/agent_types';
 import type { ToolCall, ToolResult } from '../../shared/tool_types';
 import * as store from '../state_store';
 import { executorSystemPrompt, executorRetryNudge } from '../prompts/executor';
@@ -18,7 +18,6 @@ import { approxTokens } from '../budget';
 
 export interface ExecutorInput {
   state: AgentStateHot;
-  step: PlanStep | null;
   registry: ToolRegistry;
   client: OllamaClient;
   model: string;
@@ -38,7 +37,7 @@ export interface ExecutorOutput {
 }
 
 export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput> {
-  const { state, step, registry, client, model, signal } = input;
+  const { state, registry, client, model, signal } = input;
 
   const toolDefs = registry.toToolDefs();
   const toolNames = registry.names();
@@ -47,7 +46,8 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
 
   const systemPrompt = executorSystemPrompt({
     goal: state.goal.text,
-    step: step ? { id: step.id, title: step.title, rationale: step.rationale } : null,
+    plan: state.plan,
+    activeStepId: state.currentStepId,
     relevantFindings,
     scratchTail,
     availableToolNames: toolNames,

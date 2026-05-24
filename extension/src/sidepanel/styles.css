@@ -353,6 +353,98 @@ button { font-family: inherit; }
 }
 .agent-goal-label { font-weight: 600; color: var(--accent); margin-right: 4px; }
 
+.agent-criteria {
+  font-size: 11px;
+  color: var(--text);
+  padding: 4px 8px;
+  background: var(--bg);
+  border-radius: 4px;
+  border-left: 2px solid var(--accent);
+}
+.agent-criteria-label { font-weight: 600; color: var(--accent); display: block; margin-bottom: 2px; font-size: 11px; }
+.agent-criteria ul { margin: 0; padding-left: 18px; }
+.agent-criteria li { line-height: 1.4; }
+
+.agent-plan {
+  background: var(--bg);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+}
+.agent-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.agent-plan-label {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agent-plan-rev {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+.agent-plan-tree {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-children {
+  margin: 4px 0 0 18px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.plan-step-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.plan-step-status {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.status-active { color: var(--accent); }
+.status-done { color: var(--success); }
+.status-failed { color: var(--error); }
+.status-skipped { color: var(--text-muted); }
+.status-pending { color: var(--text-muted); }
+.plan-step-id {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.plan-step-title { color: var(--text); }
+.plan-step-active .plan-step-title { font-weight: 600; }
+.plan-step-rationale {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-left: 22px;
+  font-style: italic;
+}
+.agent-plan-notes {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  margin-top: 6px;
+  font-style: italic;
+}
+
 .agent-timeline {
   margin: 0;
   padding: 0 0 0 4px;
