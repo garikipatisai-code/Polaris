@@ -35,6 +35,12 @@ export interface AgentStateHot {
   breaker: BreakerState;
   scratchpadRef: ScratchpadRef;
   currentStepId: string | null;
+  /** Set by Executor when it calls `finish`; consumed by Evaluator. */
+  pendingFinishSummary: string | null;
+  /** Set by Evaluator when verdict='replan'; consumed by next Planner call. */
+  replanHint: string | null;
+  /** Set by Evaluator on verdict='done' (or fallback to pendingFinishSummary). */
+  finalAnswer: string | null;
   lastTouch: number;                // epoch ms; watchdog bumps
   resumedAt: number | null;         // set on crash-resume detection
   readonly createdAt: number;

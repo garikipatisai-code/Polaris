@@ -4,22 +4,36 @@
 // persistent state via state_store, invokes role functions, dispatches
 // tools, emits events for the UI.
 //
-// M2.3 scope: minimal. Uses a hardcoded 1-step plan ("achieve the goal
-// using available tools, then call finish"). The real Planner arrives
-// in M2.4; Evaluator + Compactor in M2.5; Circuit breaker in M2.6.
-// The state-machine *shape* matches the M2 design — later milestones
-// fill in the phase handlers.
+// M2.5 scope:
+//   - Real Planner role (initial + replan)
+//   - Executor loop with mock tools
+//   - Compactor fires before each Executor turn when scratchpad ≥ 80%
+//     of executor budget
+//   - Evaluator runs after every EVAL_EVERY_N_STEPS turns AND on finish
+//   - Verdict routes: done → DONE, continue → EXECUTING,
+//     replan → PLANNING (with hint), abort → ABORTED
+//
+// Still missing (lands later):
+//   - Circuit breaker (action repetition / stuck-loop detection) → M2.6
+//   - chrome.alarms watchdog + crash-resume → M2.6
+//   - Synthetic stress test + UI polish → M2.7
 
 import type { OllamaClient } from '../background/ollama';
 import { ToolRegistry, createDefaultRegistry } from './tools';
 import { runExecutor } from './roles/executor';
 import { runPlanner } from './roles/planner';
+import { runEvaluator } from './roles/evaluator';
+import { runCompactor } from './roles/compactor';
 import * as store from './state_store';
 import type {
   AgentStateHot,
   AgentEventType,
 } from '../shared/agent_types';
+import { BUDGETS, COMPACT_THRESHOLD } from './budget';
 import { SPECIAL_TOOLS } from './tools';
+
+/** Evaluate every N successful Executor turns (in addition to on-finish). */
+const EVAL_EVERY_N_STEPS = 5;
 
 export interface OrchestratorEvent {
   type: AgentEventType;
@@ -36,6 +50,8 @@ export interface OrchestratorOptions {
   maxSteps?: number;
   /** Use thinking mode for the Planner role. Default true. */
   plannerThinking?: boolean;
+  /** Use thinking mode for the Evaluator role. Default true. */
+  evaluatorThinking?: boolean;
 }
 
 export class Orchestrator {
@@ -45,7 +61,9 @@ export class Orchestrator {
   private readonly onEvent: (event: OrchestratorEvent) => void;
   private readonly maxSteps: number;
   private readonly plannerThinking: boolean;
+  private readonly evaluatorThinking: boolean;
   private abort: AbortController | null = null;
+  private stepsSinceEval = 0;
 
   constructor(opts: OrchestratorOptions) {
     this.client = opts.client;
@@ -54,26 +72,105 @@ export class Orchestrator {
     this.onEvent = opts.onEvent ?? (() => {});
     this.maxSteps = opts.maxSteps ?? 30;
     this.plannerThinking = opts.plannerThinking ?? true;
+    this.evaluatorThinking = opts.evaluatorThinking ?? true;
   }
 
   /**
-   * Begin a new task with the given verbatim goal. Throws if a task is
-   * already in a non-terminal phase. Transitions IDLE → PLANNING (real
-   * Planner call) → EXECUTING (or → ABORTED on planner failure).
+   * Begin a new task. PLANNING → (Planner) → EXECUTING.
    */
   async start(goalText: string): Promise<AgentStateHot> {
     this.abort = new AbortController();
+    this.stepsSinceEval = 0;
     const fresh = await store.startTask(goalText);
     await this.emit(fresh.taskId, 'phase', { phase: 'PLANNING' });
-    await this.emit(fresh.taskId, 'role_start', { role: 'planner' });
+    return await this.runPlannerStep(fresh, /*isInitial=*/ true, /*replanHint=*/ undefined);
+  }
 
+  /** Run the loop until a terminal phase (DONE / ABORTED). */
+  async runUntilTerminal(): Promise<AgentStateHot> {
+    let state = await store.loadHot();
+    if (!state) throw new Error('runUntilTerminal: no active task');
+    let stepCount = 0;
+
+    while (stepCount < this.maxSteps) {
+      if (this.abort?.signal.aborted) {
+        return await this.finalizeAborted('user_abort');
+      }
+      state = (await store.loadHot())!;
+      if (state.phase === 'DONE' || state.phase === 'ABORTED') break;
+
+      // Pre-flight: compactor runs when scratchpad pressure is high.
+      if (
+        state.phase === 'EXECUTING' &&
+        state.scratchpadRef.tokens >= COMPACT_THRESHOLD * BUDGETS.executor
+      ) {
+        state = await this.runCompaction(state);
+        continue;
+      }
+
+      if (state.phase === 'EXECUTING') {
+        stepCount++;
+        this.stepsSinceEval++;
+        state = await this.executeOneStep(state);
+
+        // Periodic Evaluator (separate from on-finish — that path sets EVALUATING directly).
+        if (state.phase === 'EXECUTING' && this.stepsSinceEval >= EVAL_EVERY_N_STEPS) {
+          state = await store.patchHot({ phase: 'EVALUATING' });
+          this.stepsSinceEval = 0;
+        }
+        continue;
+      }
+
+      if (state.phase === 'EVALUATING') {
+        state = await this.runEvaluation(state);
+        continue;
+      }
+
+      if (state.phase === 'PLANNING') {
+        // Replan path. The Evaluator put us here; pull the hint from state.
+        state = await this.runPlannerStep(state, /*isInitial=*/ false, state.replanHint ?? undefined);
+        continue;
+      }
+
+      // COMPACTING / BREAKER shouldn't be reached at top of loop — pre-flight handles them.
+      // If we ever land here, just nudge back to EXECUTING.
+      console.warn('[polaris] unexpected phase at loop top:', state.phase);
+      state = await store.patchHot({ phase: 'EXECUTING' });
+    }
+
+    if (state.phase !== 'DONE' && state.phase !== 'ABORTED') {
+      return await this.finalizeAborted(`max steps (${this.maxSteps}) reached`);
+    }
+    return state;
+  }
+
+  /** Abort the in-flight task. */
+  async stop(): Promise<void> {
+    this.abort?.abort();
+    const state = await store.loadHot();
+    if (state && state.phase !== 'DONE' && state.phase !== 'ABORTED') {
+      await this.finalizeAborted('user_abort');
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // phase handlers
+  // -----------------------------------------------------------------------
+
+  private async runPlannerStep(
+    state: AgentStateHot,
+    isInitial: boolean,
+    replanHint: string | undefined,
+  ): Promise<AgentStateHot> {
+    await this.emit(state.taskId, 'role_start', { role: 'planner', isInitial, replanHint });
     const result = await runPlanner({
-      state: fresh,
+      state,
       registry: this.registry,
       client: this.client,
       model: this.model,
-      signal: this.abort.signal,
-      isInitial: true,
+      signal: this.abort?.signal,
+      isInitial,
+      replanHint,
       thinkingMode: this.plannerThinking,
     });
 
@@ -87,30 +184,27 @@ export class Orchestrator {
         genTokens: result.genTokens,
         retried: result.retried,
       });
-      await this.emit(aborted.taskId, 'error', {
-        error: `planner failed: ${result.error ?? 'unknown'}`,
-      });
+      await this.emit(aborted.taskId, 'error', { error: `planner failed: ${result.error ?? 'unknown'}` });
       return aborted;
     }
 
-    // Persist success criteria (only on first plan; goal text stays immutable).
-    let afterCriteria = fresh;
-    if (result.successCriteria && result.successCriteria.length > 0) {
-      afterCriteria = await store.appendSuccessCriteria(result.successCriteria);
+    let after = state;
+    if (isInitial && result.successCriteria && result.successCriteria.length > 0) {
+      after = await store.appendSuccessCriteria(result.successCriteria);
     }
 
     const planned = await store.patchHot({
       plan: result.plan,
       currentStepId: result.plan.rootSteps[0]?.id ?? null,
       phase: 'EXECUTING',
+      replanHint: null,        // consumed
       budgets: {
-        ...afterCriteria.budgets,
+        ...after.budgets,
         planner: {
-          ...afterCriteria.budgets.planner,
-          used: afterCriteria.budgets.planner.used + result.promptTokens,
+          ...after.budgets.planner,
+          used: after.budgets.planner.used + result.promptTokens,
         },
-        totalTokens:
-          afterCriteria.budgets.totalTokens + result.promptTokens + result.genTokens,
+        totalTokens: after.budgets.totalTokens + result.promptTokens + result.genTokens,
       },
     });
     await this.emit(planned.taskId, 'role_end', {
@@ -126,41 +220,6 @@ export class Orchestrator {
     return planned;
   }
 
-  /** Run the loop until a terminal phase (DONE / ABORTED). */
-  async runUntilTerminal(): Promise<AgentStateHot> {
-    let state = await store.loadHot();
-    if (!state) throw new Error('runUntilTerminal: no active task');
-    let stepCount = 0;
-    while (state.phase === 'EXECUTING' && stepCount < this.maxSteps) {
-      if (this.abort?.signal.aborted) {
-        state = await store.patchHot({ phase: 'ABORTED' });
-        await this.emit(state.taskId, 'verdict', { verdict: 'abort', reason: 'user_abort' });
-        return state;
-      }
-      stepCount++;
-      state = await this.executeOneStep(state);
-    }
-    if (state.phase === 'EXECUTING' && stepCount >= this.maxSteps) {
-      state = await store.patchHot({ phase: 'ABORTED' });
-      await this.emit(state.taskId, 'error', { error: `max steps (${this.maxSteps}) reached` });
-    }
-    return state;
-  }
-
-  /** Abort the in-flight task. Marks phase ABORTED on next loop iteration. */
-  async stop(): Promise<void> {
-    this.abort?.abort();
-    const state = await store.loadHot();
-    if (state && state.phase === 'EXECUTING') {
-      await store.patchHot({ phase: 'ABORTED' });
-      await this.emit(state.taskId, 'verdict', { verdict: 'abort', reason: 'user_abort' });
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // internals
-  // -----------------------------------------------------------------------
-
   private async executeOneStep(state: AgentStateHot): Promise<AgentStateHot> {
     const step = state.plan.rootSteps.find((s) => s.id === state.currentStepId) ?? null;
     await this.emit(state.taskId, 'role_start', { role: 'executor', stepId: step?.id });
@@ -173,7 +232,6 @@ export class Orchestrator {
       signal: this.abort?.signal,
     });
 
-    // Persist call + result into scratchpad + events.
     if (result.toolCall) {
       await store.appendScratch(state.taskId, 'tool_call', result.toolCall);
       await this.emit(state.taskId, 'tool_call', {
@@ -191,8 +249,7 @@ export class Orchestrator {
       });
     }
 
-    // Update Executor budget tally.
-    const next = await store.patchHot({
+    let next = await store.patchHot({
       budgets: {
         ...state.budgets,
         executor: {
@@ -202,7 +259,6 @@ export class Orchestrator {
         totalTokens: state.budgets.totalTokens + result.promptTokens + result.genTokens,
       },
     });
-
     await this.emit(next.taskId, 'role_end', {
       role: 'executor',
       ok: result.ok,
@@ -212,26 +268,188 @@ export class Orchestrator {
     });
 
     if (result.finished) {
-      // M2.3: short-circuit to DONE. M2.5 will route to EVALUATING first.
-      const done = await store.patchHot({ phase: 'DONE' });
-      await this.emit(done.taskId, 'verdict', {
-        verdict: 'done',
-        summary: result.finishSummary,
-        tool: SPECIAL_TOOLS.FINISH,
+      // Executor proposed a final answer. Route to EVALUATING; Evaluator
+      // decides whether to accept it or send back for replan.
+      next = await store.patchHot({
+        phase: 'EVALUATING',
+        pendingFinishSummary: result.finishSummary ?? null,
       });
-      return done;
+      await this.emit(next.taskId, 'phase', {
+        phase: 'EVALUATING',
+        trigger: SPECIAL_TOOLS.FINISH,
+      });
+      return next;
     }
 
     if (!result.ok) {
-      // M2.3: bail on first failure. M2.6 circuit breaker will retry/replan.
+      // M2.5: still bail on first hard tool error (no breaker yet — M2.6).
       const aborted = await store.patchHot({ phase: 'ABORTED' });
-      await this.emit(aborted.taskId, 'error', {
-        error: result.error ?? 'unknown executor error',
-      });
+      await this.emit(aborted.taskId, 'error', { error: result.error ?? 'unknown executor error' });
       return aborted;
     }
 
     return next;
+  }
+
+  private async runEvaluation(state: AgentStateHot): Promise<AgentStateHot> {
+    await this.emit(state.taskId, 'role_start', { role: 'evaluator' });
+    const result = await runEvaluator({
+      state,
+      client: this.client,
+      model: this.model,
+      signal: this.abort?.signal,
+      thinkingMode: this.evaluatorThinking,
+    });
+
+    // Always update budget regardless of outcome.
+    const afterBudget = await store.patchHot({
+      budgets: {
+        ...state.budgets,
+        evaluator: {
+          ...state.budgets.evaluator,
+          used: state.budgets.evaluator.used + result.promptTokens,
+        },
+        totalTokens:
+          state.budgets.totalTokens + result.promptTokens + result.genTokens,
+      },
+    });
+
+    if (!result.ok) {
+      await this.emit(afterBudget.taskId, 'role_end', {
+        role: 'evaluator',
+        ok: false,
+        error: result.error,
+        promptTokens: result.promptTokens,
+        genTokens: result.genTokens,
+        retried: result.retried,
+      });
+      // Conservative fallback: pretend the Evaluator said "continue" — let
+      // the Executor keep going. If we hit max steps the loop will abort.
+      this.stepsSinceEval = 0;
+      return await store.patchHot({
+        phase: 'EXECUTING',
+        pendingFinishSummary: null,
+      });
+    }
+
+    await this.emit(afterBudget.taskId, 'role_end', {
+      role: 'evaluator',
+      ok: true,
+      verdict: result.verdict,
+      promptTokens: result.promptTokens,
+      genTokens: result.genTokens,
+      retried: result.retried,
+    });
+    await this.emit(afterBudget.taskId, 'verdict', {
+      verdict: result.verdict,
+      reason: result.reason,
+      finalAnswer: result.finalAnswer,
+      replanHint: result.replanHint,
+    });
+
+    switch (result.verdict) {
+      case 'done': {
+        const answer =
+          result.finalAnswer ?? afterBudget.pendingFinishSummary ?? '(no summary)';
+        return await store.patchHot({
+          phase: 'DONE',
+          finalAnswer: answer,
+          pendingFinishSummary: null,
+        });
+      }
+      case 'continue':
+        this.stepsSinceEval = 0;
+        return await store.patchHot({
+          phase: 'EXECUTING',
+          pendingFinishSummary: null,
+        });
+      case 'replan':
+        this.stepsSinceEval = 0;
+        return await store.patchHot({
+          phase: 'PLANNING',
+          pendingFinishSummary: null,
+          replanHint: result.replanHint ?? result.reason ?? 'evaluator requested replan',
+        });
+      case 'abort':
+        return await store.patchHot({
+          phase: 'ABORTED',
+          pendingFinishSummary: null,
+        });
+      default: {
+        // Unreachable — verdict is Zod-validated as a fixed union before we get here.
+        throw new Error(`unexpected verdict: ${String(result.verdict)}`);
+      }
+    }
+  }
+
+  private async runCompaction(state: AgentStateHot): Promise<AgentStateHot> {
+    await this.emit(state.taskId, 'role_start', { role: 'compactor' });
+    await store.patchHot({ phase: 'COMPACTING' });
+
+    const allScratch = await store.readScratchAll(state.taskId);
+    const existingKeys = await store.existingFindingKeys(state.taskId);
+
+    const result = await runCompactor({
+      goal: state.goal.text,
+      scratchEntries: allScratch,
+      existingKeys,
+      client: this.client,
+      model: this.model,
+      signal: this.abort?.signal,
+    });
+
+    if (!result.ok || !result.findings) {
+      await this.emit(state.taskId, 'role_end', {
+        role: 'compactor',
+        ok: false,
+        error: result.error,
+        promptTokens: result.promptTokens,
+        genTokens: result.genTokens,
+      });
+      // Continue executing without compacting — scratchpad will keep growing
+      // until the Executor's per-call budget guard refuses it. M2.6 breaker
+      // will then nudge / abort.
+      return await store.patchHot({ phase: 'EXECUTING' });
+    }
+
+    // Persist findings, then delete the compacted scratch entries. M2.6 will
+    // wrap these in a single IDB transaction so a crash between writes can't
+    // double-count. M2.5 accepts the small race window.
+    for (const f of result.findings) {
+      await store.appendFinding({
+        taskId: state.taskId,
+        source: 'compactor',
+        stepId: state.currentStepId,
+        kind: f.kind,
+        key: f.key,
+        value: f.value,
+        evidence: f.evidence,
+      });
+    }
+    const compactedSeqs = allScratch.map((e) => e.seq);
+    await store.deleteScratchSeqs(state.taskId, compactedSeqs);
+
+    const back = await store.patchHot({ phase: 'EXECUTING' });
+    await this.emit(back.taskId, 'compaction', {
+      discarded: compactedSeqs.length,
+      produced: result.findings.length,
+      promptTokens: result.promptTokens,
+      genTokens: result.genTokens,
+    });
+    await this.emit(back.taskId, 'role_end', {
+      role: 'compactor',
+      ok: true,
+      promptTokens: result.promptTokens,
+      genTokens: result.genTokens,
+      retried: result.retried,
+    });
+    return back;
+  }
+
+  private async finalizeAborted(reason: string): Promise<AgentStateHot> {
+    const state = await store.patchHot({ phase: 'ABORTED' });
+    await this.emit(state.taskId, 'verdict', { verdict: 'abort', reason });
+    return state;
   }
 
   private async emit(taskId: string, type: AgentEventType, data: unknown): Promise<void> {

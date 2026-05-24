@@ -231,6 +231,7 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
     client,
     model: settings.model,
     plannerThinking: settings.plannerThinking,
+    evaluatorThinking: settings.evaluatorThinking,
     onEvent: (event) => {
       send(port, { type: 'agent.event', event });
       if (event.type === 'verdict') {
