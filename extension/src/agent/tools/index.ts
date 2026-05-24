@@ -4,7 +4,7 @@
 // New tools should be added here (and to the right category file).
 
 import { ToolRegistry } from './registry';
-import { echoTool, addTool, delayTool, finishTool } from './core';
+import { echoTool, addTool, delayTool, finishTool, nextStepTool } from './core';
 import { memoryReadTool, memoryWriteTool, memoryListTool } from './memory';
 
 export function createDefaultRegistry(): ToolRegistry {
@@ -13,6 +13,7 @@ export function createDefaultRegistry(): ToolRegistry {
   reg.register(echoTool);
   reg.register(addTool);
   reg.register(delayTool);
+  reg.register(nextStepTool);
   reg.register(finishTool);
   // Memory (IDB-backed, per-task)
   reg.register(memoryWriteTool);
@@ -23,11 +24,13 @@ export function createDefaultRegistry(): ToolRegistry {
 
 export { ToolRegistry } from './registry';
 export type { ToolHandler, ToolContext } from './registry';
-export { echoTool, addTool, delayTool, finishTool } from './core';
+export { echoTool, addTool, delayTool, finishTool, nextStepTool } from './core';
 export { memoryWriteTool, memoryReadTool, memoryListTool } from './memory';
 
-/** Names of tools the orchestrator special-cases (phase transitions, etc.). */
+/** Names of tools the orchestrator special-cases (phase transitions, plan advancement, etc.). */
 export const SPECIAL_TOOLS = {
   /** `finish` calls route the state machine to EVALUATING. */
   FINISH: 'finish',
+  /** `next_step` calls advance currentStepId and update plan step status. */
+  NEXT_STEP: 'next_step',
 } as const;

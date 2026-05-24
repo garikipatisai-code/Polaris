@@ -31,11 +31,15 @@ import type {
   AgentStateHot,
   AgentEventType,
 } from '../shared/agent_types';
-import { BUDGETS, COMPACT_THRESHOLD } from './budget';
+import { BUDGETS, COMPACT_THRESHOLD, COMPACT_ENTRY_COUNT } from './budget';
 import { SPECIAL_TOOLS } from './tools';
+import type { Plan, PlanStep } from '../shared/agent_types';
 
 /** Evaluate every N successful Executor turns (in addition to on-finish). */
 const EVAL_EVERY_N_STEPS = 5;
+
+/** Force-advance the plan step if the Executor spends this many turns on it without calling next_step. */
+const MAX_TURNS_PER_STEP = 8;
 
 export interface OrchestratorEvent {
   type: AgentEventType;
@@ -124,10 +128,14 @@ export class Orchestrator {
       state = (await store.loadHot())!;
       if (state.phase === 'DONE' || state.phase === 'ABORTED') break;
 
-      // Pre-flight: compactor runs when scratchpad pressure is high.
+      // Pre-flight: compactor runs when scratchpad pressure is high (token
+      // budget OR entry count). The entry-count branch matters for normal-
+      // length tasks where each tool round-trip is small (~30 tokens) — the
+      // token threshold alone almost never trips at maxSteps=30.
       if (
         state.phase === 'EXECUTING' &&
-        state.scratchpadRef.tokens >= COMPACT_THRESHOLD * BUDGETS.executor
+        (state.scratchpadRef.tokens >= COMPACT_THRESHOLD * BUDGETS.executor ||
+          state.scratchpadRef.count >= COMPACT_ENTRY_COUNT)
       ) {
         state = await this.runCompaction(state);
         continue;
@@ -248,6 +256,7 @@ export class Orchestrator {
     const planned = await store.patchHot({
       plan: result.plan,
       currentStepId: result.plan.rootSteps[0]?.id ?? null,
+      turnsOnCurrentStep: 0,
       phase: 'EXECUTING',
       replanHint: null,        // consumed
       budgets: {
@@ -389,6 +398,25 @@ export class Orchestrator {
       return next;
     }
 
+    // Step advancement — explicit (next_step tool) or forced (max turns hit).
+    const askedNextStep =
+      result.toolCall?.function.name === SPECIAL_TOOLS.NEXT_STEP &&
+      result.toolResult?.ok === true;
+    const turnsOnStep = (next.turnsOnCurrentStep ?? 0) + 1;
+    let stepAdvanced = false;
+    if (askedNextStep) {
+      next = await this.advancePlanStep(next, 'explicit');
+      stepAdvanced = true;
+    } else if (turnsOnStep >= MAX_TURNS_PER_STEP && next.currentStepId) {
+      log('warn', 'agent', `force-advancing step after ${turnsOnStep} turns`, {
+        stepId: next.currentStepId,
+      });
+      next = await this.advancePlanStep(next, 'forced');
+      stepAdvanced = true;
+    } else {
+      next = await store.patchHot({ turnsOnCurrentStep: turnsOnStep });
+    }
+
     if (!result.ok) {
       // M2.5: still bail on first hard tool error (no breaker yet — M2.6).
       const aborted = await store.patchHot({ phase: 'ABORTED' });
@@ -396,6 +424,54 @@ export class Orchestrator {
       return aborted;
     }
 
+    // If we advanced past the last step, route to EVALUATING — the model is
+    // out of plan to walk and the Evaluator decides done/replan/abort.
+    if (stepAdvanced && next.currentStepId === null) {
+      next = await store.patchHot({
+        phase: 'EVALUATING',
+        pendingFinishSummary: null,
+      });
+      await this.emit(next.taskId, 'phase', {
+        phase: 'EVALUATING',
+        trigger: 'all_steps_done',
+      });
+    }
+
+    return next;
+  }
+
+  /**
+   * Mark the current plan step as `done`, find the next pending step, set
+   * it `active`, reset the breaker's repeats counter (different action set
+   * is now legitimate), and zero `turnsOnCurrentStep`.
+   *
+   * Returns updated state. If no next pending step exists, currentStepId
+   * becomes null and the caller routes to EVALUATING.
+   */
+  private async advancePlanStep(
+    state: AgentStateHot,
+    trigger: 'explicit' | 'forced',
+  ): Promise<AgentStateHot> {
+    const result = walkPlan(state.plan, state.currentStepId);
+    log('info', 'agent', `step advance (${trigger})`, {
+      from: state.currentStepId,
+      to: result.nextStepId,
+      planRevision: state.plan.revision,
+    });
+    const next = await store.patchHot({
+      plan: result.plan,
+      currentStepId: result.nextStepId,
+      turnsOnCurrentStep: 0,
+      // Reset action-repeat counter — a different step's tool calls are
+      // legitimately different actions, not stuck-loop signal.
+      breaker: { ...state.breaker, repeats: {} },
+    });
+    await this.emit(next.taskId, 'phase', {
+      step_advance: true,
+      trigger,
+      fromStep: state.currentStepId,
+      toStep: result.nextStepId,
+    });
     return next;
   }
 
@@ -600,4 +676,44 @@ export class Orchestrator {
       console.warn('[polaris] event persist failed', e);
     }
   }
+}
+
+/**
+ * Mark the step at currentStepId as `done` and find the next pending step
+ * (set it `active`). Returns the new plan + the next step id (or null if
+ * we've walked off the end).
+ *
+ * Children stay as-is — M2.6.3 only walks root steps. M2.7+ may add
+ * sub-step traversal if needed.
+ */
+function walkPlan(plan: Plan, currentStepId: string | null): { plan: Plan; nextStepId: string | null } {
+  if (currentStepId === null) {
+    return { plan, nextStepId: null };
+  }
+  const newRootSteps: PlanStep[] = plan.rootSteps.map((s) => ({ ...s }));
+  let nextStepId: string | null = null;
+  let foundCurrent = false;
+  for (let i = 0; i < newRootSteps.length; i++) {
+    if (newRootSteps[i]!.id === currentStepId) {
+      foundCurrent = true;
+      newRootSteps[i] = { ...newRootSteps[i]!, status: 'done' };
+      // Find the next pending step.
+      for (let j = i + 1; j < newRootSteps.length; j++) {
+        if (newRootSteps[j]!.status === 'pending' || newRootSteps[j]!.status === 'active') {
+          newRootSteps[j] = { ...newRootSteps[j]!, status: 'active' };
+          nextStepId = newRootSteps[j]!.id;
+          break;
+        }
+      }
+      break;
+    }
+  }
+  if (!foundCurrent) {
+    // currentStepId not in plan (could happen after a replan). Bail.
+    return { plan, nextStepId: null };
+  }
+  return {
+    plan: { ...plan, rootSteps: newRootSteps },
+    nextStepId,
+  };
 }

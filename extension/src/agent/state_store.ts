@@ -48,7 +48,14 @@ export async function loadHot(): Promise<AgentStateHot | null> {
   return (out[HOT_KEY] as AgentStateHot | undefined) ?? null;
 }
 
-export async function setHot(state: AgentStateHot): Promise<void> {
+/**
+ * INTERNAL — full hot-state replacement. Not exported. The only legitimate
+ * external mutation surfaces are: startTask (initialize), patchHot (rejects
+ * the goal field), appendSuccessCriteria (one-shot during initial planning),
+ * and clearHot (full reset). Keeping setHot module-internal closes the
+ * back door that "structural goal immutability" was supposed to prevent.
+ */
+async function _setHot(state: AgentStateHot): Promise<void> {
   await chrome.storage.local.set({ [HOT_KEY]: state });
 }
 
@@ -64,7 +71,7 @@ export async function patchHot(patch: Partial<Patchable>): Promise<AgentStateHot
   const current = await loadHot();
   if (!current) throw new Error('no hot state to patch');
   const next: AgentStateHot = { ...current, ...patch, lastTouch: Date.now() };
-  await setHot(next);
+  await _setHot(next);
   return next;
 }
 
@@ -72,7 +79,7 @@ export async function bumpLastTouch(): Promise<void> {
   const current = await loadHot();
   if (!current) return;
   current.lastTouch = Date.now();
-  await setHot(current);
+  await _setHot(current);
 }
 
 /**
@@ -100,7 +107,7 @@ export async function startTask(goalText: string): Promise<AgentStateHot> {
         resumedAt: Date.now(),
         lastTouch: Date.now(),
       };
-      await setHot(aborted);
+      await _setHot(aborted);
       console.warn(
         `[polaris] auto-aborted stale task ${current.taskId} ` +
         `(was ${current.phase}, no activity for ${Math.round(age / 1000)}s)`,
@@ -137,6 +144,7 @@ export async function startTask(goalText: string): Promise<AgentStateHot> {
     },
     scratchpadRef: { count: 0, tokens: 0 },
     currentStepId: null,
+    turnsOnCurrentStep: 0,
     pendingFinishSummary: null,
     replanHint: null,
     finalAnswer: null,
@@ -144,7 +152,7 @@ export async function startTask(goalText: string): Promise<AgentStateHot> {
     resumedAt: null,
     createdAt: now,
   };
-  await setHot(initial);
+  await _setHot(initial);
   return initial;
 }
 
@@ -154,22 +162,29 @@ export async function clearHot(): Promise<void> {
 }
 
 /**
- * Extend the goal's successCriteria list. The Planner emits these on the
- * first plan; subsequent replans omit them. Goal text itself remains
- * immutable. Capped at 20 entries total.
+ * Set the goal's successCriteria list ONCE during initial planning. Refuses
+ * if the criteria list is already populated — replan iterations must NOT
+ * extend the criteria, only the initial Planner call may. Goal text itself
+ * remains immutable in all cases.
  */
 export async function appendSuccessCriteria(criteria: string[]): Promise<AgentStateHot> {
   const current = await loadHot();
   if (!current) throw new Error('no hot state');
+  if (current.goal.successCriteria.length > 0) {
+    throw new Error(
+      'cannot extend successCriteria: already set during initial planning ' +
+      `(existing ${current.goal.successCriteria.length} criteria)`,
+    );
+  }
   const updated: AgentStateHot = {
     ...current,
     goal: {
       ...current.goal,
-      successCriteria: [...current.goal.successCriteria, ...criteria].slice(0, 20),
+      successCriteria: criteria.slice(0, 20),
     },
     lastTouch: Date.now(),
   };
-  await setHot(updated);
+  await _setHot(updated);
   return updated;
 }
 
@@ -200,7 +215,7 @@ export async function appendScratch(
     hot.scratchpadRef.count++;
     hot.scratchpadRef.tokens += entry.tokens;
     hot.lastTouch = Date.now();
-    await setHot(hot);
+    await _setHot(hot);
   }
   return seq;
 }
@@ -245,7 +260,7 @@ export async function deleteScratchSeqs(taskId: string, seqs: number[]): Promise
     hot.scratchpadRef.count = Math.max(0, hot.scratchpadRef.count - seqs.length);
     hot.scratchpadRef.tokens = Math.max(0, hot.scratchpadRef.tokens - deletedTokens);
     hot.lastTouch = Date.now();
-    await setHot(hot);
+    await _setHot(hot);
   }
 }
 

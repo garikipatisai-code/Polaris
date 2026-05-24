@@ -35,6 +35,8 @@ export interface AgentStateHot {
   breaker: BreakerState;
   scratchpadRef: ScratchpadRef;
   currentStepId: string | null;
+  /** Number of Executor turns spent on currentStepId; resets on advance. Force-advances at MAX_TURNS_PER_STEP. */
+  turnsOnCurrentStep: number;
   /** Set by Executor when it calls `finish`; consumed by Evaluator. */
   pendingFinishSummary: string | null;
   /** Set by Evaluator when verdict='replan'; consumed by next Planner call. */

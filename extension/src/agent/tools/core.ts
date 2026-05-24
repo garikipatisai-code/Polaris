@@ -96,3 +96,29 @@ export const finishTool: ToolHandler<
   },
   execute: async () => ({ ack: true as const }),
 };
+
+export const nextStepTool: ToolHandler<
+  { reason?: string },
+  { ack: true }
+> = {
+  name: 'next_step',
+  description:
+    'Mark the current plan step as DONE and advance to the next pending step. ' +
+    'Call this when the actions required by the current step have been completed. ' +
+    'Do NOT call this on the last step — call `finish` instead.',
+  argsSchema: z.object({
+    reason: z.string().max(200).optional(),
+  }),
+  outputSchema: z.object({ ack: z.literal(true) }),
+  parametersJSON: {
+    type: 'object',
+    properties: {
+      reason: {
+        type: 'string',
+        maxLength: 200,
+        description: 'Optional: one-line note on what was accomplished in this step.',
+      },
+    },
+  },
+  execute: async () => ({ ack: true as const }),
+};

@@ -50,8 +50,10 @@ RULES:
 - Call exactly ONE tool per turn. Never two.
 - Work through the plan in order. Use the recent actions to know what's
   already done — don't repeat steps.
-- If every step is satisfied by what's already been done, call \`finish\`
-  with a final summary.
+- When you've completed the actions for the **current step**, call
+  \`next_step\` to advance to the next pending step.
+- When all plan steps are done OR the goal is fully satisfied, call
+  \`finish\` with a final summary.
 - Never reply in prose. Never invent tool names. Never restate the goal.
 - If you already called a tool with the same arguments and it produced
   an error, try a different tool or different arguments.`;

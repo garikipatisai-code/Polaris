@@ -19,6 +19,15 @@ export const BUDGETS: Record<Role, number> = {
 /** Compaction fires when scratchpad reaches this fraction of the Executor budget. */
 export const COMPACT_THRESHOLD = 0.8;
 
+/**
+ * Compaction also fires when scratchpad has accumulated at least this many
+ * raw entries. Catches the realistic case where each entry is small (~30
+ * tokens) so the token threshold never trips, but the trace is still long
+ * enough that the model would benefit from compaction into structured
+ * findings. ~10 entries ≈ 5 tool round-trips.
+ */
+export const COMPACT_ENTRY_COUNT = 10;
+
 export function approxTokens(s: string | null | undefined): number {
   if (!s) return 0;
   return Math.ceil(s.length / 4);
