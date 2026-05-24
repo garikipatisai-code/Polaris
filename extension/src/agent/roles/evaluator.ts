@@ -27,6 +27,8 @@ export interface EvaluatorInput {
   model: string;
   signal?: AbortSignal;
   thinkingMode: boolean;
+  /** True if the Executor's `finish` triggered this Evaluator, false for periodic checkpoint. */
+  triggeredByFinish: boolean;
 }
 
 export interface EvaluatorOutput {
@@ -49,7 +51,7 @@ const EvaluatorResponseSchema = z.object({
 });
 
 export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutput> {
-  const { state, client, model, signal, thinkingMode } = input;
+  const { state, client, model, signal, thinkingMode, triggeredByFinish } = input;
 
   const findings = await store.findingsByRecency(state.taskId, 30);
   const scratchTail = await store.readScratchTail(state.taskId, 15);
@@ -60,6 +62,7 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     findings,
     scratchTail,
     pendingFinishSummary: state.pendingFinishSummary,
+    triggeredByFinish,
   });
 
   const estimated = approxTokens(systemPrompt);

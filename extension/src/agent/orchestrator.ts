@@ -292,13 +292,18 @@ export class Orchestrator {
   }
 
   private async runEvaluation(state: AgentStateHot): Promise<AgentStateHot> {
-    await this.emit(state.taskId, 'role_start', { role: 'evaluator' });
+    const triggeredByFinish = state.pendingFinishSummary !== null;
+    await this.emit(state.taskId, 'role_start', {
+      role: 'evaluator',
+      trigger: triggeredByFinish ? 'finish' : 'periodic',
+    });
     const result = await runEvaluator({
       state,
       client: this.client,
       model: this.model,
       signal: this.abort?.signal,
       thinkingMode: this.evaluatorThinking,
+      triggeredByFinish,
     });
 
     // Always update budget regardless of outcome.
@@ -349,8 +354,29 @@ export class Orchestrator {
 
     switch (result.verdict) {
       case 'done': {
-        const answer =
-          result.finalAnswer ?? afterBudget.pendingFinishSummary ?? '(no summary)';
+        // Defensive: a "done" verdict MUST come with a real final answer.
+        // The Evaluator occasionally returns done with finalAnswer:"" — that's
+        // a contract violation we refuse to honor (otherwise the user would
+        // see a terminal DONE with empty answer).
+        const fromEvaluator = result.finalAnswer?.trim();
+        const fromExecutor = afterBudget.pendingFinishSummary?.trim();
+        const answer = fromEvaluator || fromExecutor;
+        if (!answer) {
+          console.warn(
+            '[polaris] evaluator returned done with empty finalAnswer and no executor summary; ' +
+            'overriding to "continue" — model contract violation',
+          );
+          await this.emit(afterBudget.taskId, 'verdict', {
+            verdict: 'continue',
+            reason: `evaluator returned done with empty finalAnswer (was: "${result.reason ?? ''}") — overridden to continue`,
+            originalVerdict: 'done',
+          });
+          this.stepsSinceEval = 0;
+          return await store.patchHot({
+            phase: 'EXECUTING',
+            pendingFinishSummary: null,
+          });
+        }
         return await store.patchHot({
           phase: 'DONE',
           finalAnswer: answer,
@@ -363,13 +389,19 @@ export class Orchestrator {
           phase: 'EXECUTING',
           pendingFinishSummary: null,
         });
-      case 'replan':
+      case 'replan': {
+        // Defensive: replan also needs a real hint or we fall back to the reason.
+        const hint =
+          result.replanHint?.trim() ||
+          result.reason?.trim() ||
+          'evaluator requested replan without specific guidance';
         this.stepsSinceEval = 0;
         return await store.patchHot({
           phase: 'PLANNING',
           pendingFinishSummary: null,
-          replanHint: result.replanHint ?? result.reason ?? 'evaluator requested replan',
+          replanHint: hint,
         });
+      }
       case 'abort':
         return await store.patchHot({
           phase: 'ABORTED',

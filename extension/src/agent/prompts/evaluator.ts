@@ -13,6 +13,8 @@ export interface EvaluatorPromptInput {
   findings: Finding[];
   scratchTail: ScratchEntry[];
   pendingFinishSummary: string | null;
+  /** True when this Evaluator call was triggered by the Executor calling `finish`; false for periodic checkpoints. */
+  triggeredByFinish: boolean;
 }
 
 export function evaluatorSystemPrompt(input: EvaluatorPromptInput): string {
@@ -32,8 +34,13 @@ export function evaluatorSystemPrompt(input: EvaluatorPromptInput): string {
     ? '(no recent actions)'
     : input.scratchTail.map(compactScratch).join('\n');
 
+  const triggerBlock = input.triggeredByFinish
+    ? 'TRIGGER: Executor called `finish` — it believes the task is complete.'
+    : 'TRIGGER: periodic checkpoint (Executor has NOT signaled completion). ' +
+      'Strongly prefer "continue" unless every success criterion is unambiguously satisfied.';
+
   const finishBlock = input.pendingFinishSummary
-    ? `EXECUTOR HAS PROPOSED THIS FINAL ANSWER (you decide whether to accept):\n  "${input.pendingFinishSummary}"\n`
+    ? `EXECUTOR HAS PROPOSED THIS FINAL ANSWER (you decide whether to accept):\n  "${input.pendingFinishSummary}"\n\n`
     : '';
 
   return `You are the EVALUATOR for Polaris.
@@ -53,27 +60,40 @@ ${scratchBlock}
 CURRENT FINDINGS:
 ${findingsBlock}
 
+${triggerBlock}
+
 ${finishBlock}YOUR JOB:
 Look at what's been done and decide ONE of:
-- "done": every success criterion is supported by findings or recent actions.
-   Provide finalAnswer (≤1000 chars) — this is what the user will see.
-- "continue": progress is healthy; the Executor should keep going on the plan.
-- "replan": findings invalidate the plan, the plan was wrong, or arithmetic
-   /answer in the proposed finish is incorrect. Provide replanHint
-   (≤200 chars) explaining the issue concretely.
+- "done": every success criterion is supported by findings or recent
+   actions, AND you can write a concrete finalAnswer. finalAnswer MUST
+   be a non-empty string (≤1000 chars) containing the actual answer
+   the user will read. If you cannot write a real finalAnswer, the
+   verdict is NOT "done" — choose "continue" or "replan" instead.
+- "continue": progress is healthy; the Executor should keep going on
+   the plan. Use this whenever the task is not unambiguously complete.
+- "replan": findings invalidate the plan, the plan was wrong, or the
+   Executor's proposed finish is incorrect (math wrong, missed inputs,
+   fabricated steps, contradictory data). Provide replanHint (≤200
+   chars) explaining the issue concretely.
 - "abort": goal is unreachable (contradictions, no candidates, blocked).
    Provide reason.
 
-Be strict: if the Executor proposed a final answer but it does NOT match
-findings (e.g., math wrong, missed inputs, fabricated steps), return
-"replan" with a concrete hint — DO NOT just pass it through as "done".
+STRICT RULES:
+1. "done" requires a non-empty finalAnswer that directly answers the
+   GOAL. An empty finalAnswer is forbidden.
+2. If the Executor proposed a final answer but it does NOT match
+   findings, return "replan" with a concrete hint — DO NOT pass an
+   incorrect answer through as "done".
+3. On a periodic checkpoint (TRIGGER above), bias heavily toward
+   "continue" — only return "done" if the goal is unambiguously met
+   AND you have a real finalAnswer to give.
 
 Output ONLY a single JSON object matching this exact shape:
 {
   "verdict": "done" | "continue" | "replan" | "abort",
   "reason": "≤200 chars",
-  "finalAnswer": "only when verdict='done'",
-  "replanHint": "only when verdict='replan'"
+  "finalAnswer": "non-empty string when verdict='done'",
+  "replanHint": "non-empty string when verdict='replan'"
 }`;
 }
 
