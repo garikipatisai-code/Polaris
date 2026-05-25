@@ -19,8 +19,9 @@ In active development. Currently:
 - ✅ Architecture designed (hierarchical agent + persistent state + ARIA-tree extraction + vision-grounded verification)
 - ✅ Capability probe written and verified against Qwen3.5-4B on real hardware
 - ✅ **M1** — extension skeleton + Ollama wiring + streaming chat in side panel
-- ✅ **M2** — full agent loop (Planner / Executor / Evaluator / Compactor) with persistent state, step advancement, circuit breaker, watchdog, crash-resume, and 73 unit + integration tests proving goal byte-survival across replan
-- ⏳ **M3** — real browser tools (ARIA-tree extractor, tab management, screenshot vision fallback) — next
+- ✅ **M2** — full agent loop (Planner / Executor / Evaluator / Compactor) with persistent state, step advancement, circuit breaker, watchdog, crash-resume, and 116 unit + integration tests proving goal byte-survival across replan
+- ⏳ **M3** — real browser tools backend wired (ARIA-tree extractor, tab manager, search, retailer adapter framework + Amazon, browser tool lifecycle); 227 total tests; end-to-end browser validation pending Linux GPU box
+- ⏳ **M3** vision tool — pending (needs real Ollama vision call)
 
 ## Hardware
 
@@ -103,11 +104,39 @@ The agent's pure logic and orchestrator state machine are covered by Vitest:
 
 ```bash
 cd extension
-npm test           # one-shot run
+npm test           # 301 mock-Ollama tests, ~15 s
 npm run test:watch # watch mode
 ```
 
-73 tests: `walkPlan`, `actionHash`/`stableStringify`, `parseJSONPermissive`, the circuit breaker (`evaluate`, `recordAfter`, `resetForReplan`, `recordTrip`), budget helpers, ULID, state-store lifecycle (including the goal-immutability and forward-fill-migration contracts), and 5 orchestrator end-to-end integration tests with a scripted fake Ollama client. The latter prove — among other things — that goal text is byte-equal at terminal phase even across replan + retry cycles, no real model required.
+114 tests cover:
+- Pure-function units (`walkPlan`, `actionHash`/`stableStringify`, `parseJSONPermissive`, ULID, budget helpers including the new chars-per-token reconciliation)
+- Circuit breaker (`evaluate`, `recordAfter`, `resetForReplan`, `recordTrip`, plus the M2.7.2 distinct-action progress signal)
+- State store (lifecycle, goal immutability, forward-fill migration, plus the hot-state mutex serialization contract)
+- 5 orchestrator end-to-end integration tests with a scripted fake Ollama client (proves goal byte-survival across replan + retry without a real model)
+- OllamaClient HTTP timeout, 5xx retry, network-error retry, abort-signal propagation, and `keep_alive` defaults
+- Role retry-pattern shape: every role's retry path uses `[system, user-anchor, assistant-failed, user-nudge]` rather than the unreliable `[system, system-nudge]`
+
+### Real-Ollama integration tests
+
+Two extra tiers exercise the agent against a live Ollama server:
+
+```bash
+# Fast smoke — Planner JSON round-trip + Executor tool_call round-trip.
+# Skips gracefully if Ollama isn't reachable. ~30s + ~70s on Mac CPU,
+# <10s total on a GPU box.
+npm run test:integration
+
+# Full agent loop — 4 multi-turn end-to-end tests:
+#   • trivial single-tool task
+#   • multi-tool with memory + sum
+#   • non-ASCII goal byte-survival
+#   • compaction-fires + findings persisted + scratchpad emptied (Phase 4)
+# Opt-in because each test does 4–8+ model calls; on the Linux P2200 they
+# take 1–3 min each, on Mac CPU they can take 20+ min.
+npm run test:integration:full
+```
+
+Override the URL or model via env vars: `OLLAMA_URL=http://192.168.1.50:11434 OLLAMA_MODEL=qwen3.5:4b npm run test:integration:full`.
 
 ## Run the capability probe
 
