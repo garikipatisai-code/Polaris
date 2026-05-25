@@ -462,8 +462,53 @@ button { font-family: inherit; }
 .agent-event { padding: 1px 0; }
 .agent-event-error { color: var(--error); }
 .agent-event-verdict { color: var(--success); font-weight: 600; }
-.agent-event-breaker { color: #d97706; }
+.agent-event-breaker {
+  color: #92400e;
+  background: rgba(217, 119, 6, 0.10);
+  border-left: 2px solid #d97706;
+  padding: 4px 8px;
+  border-radius: 3px;
+  margin: 2px 0;
+}
+.agent-event-breaker .breaker-icon { margin-right: 4px; }
+.agent-event-breaker .breaker-label { font-weight: 600; }
+.agent-event-breaker .breaker-reason { color: var(--text-muted); }
+.agent-event-compaction {
+  color: var(--text);
+  background: rgba(91, 108, 255, 0.06);
+  border-left: 2px solid var(--text-muted);
+  padding: 4px 8px;
+  border-radius: 3px;
+  margin: 2px 0;
+}
+.agent-event-compaction .compaction-icon { margin-right: 4px; color: var(--text-muted); }
+.agent-event-compaction .compaction-label { font-weight: 500; }
+.agent-event-compaction .compaction-cost {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  padding-left: 16px;
+}
 .agent-event-pending { color: var(--text-muted); }
+
+.retry-badge {
+  display: inline-block;
+  background: rgba(217, 119, 6, 0.15);
+  color: #b45309;
+  padding: 0 4px;
+  margin-left: 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+@media (prefers-color-scheme: dark) {
+  .agent-event-breaker { color: #fbbf24; background: rgba(217, 119, 6, 0.15); }
+  .agent-event-breaker .breaker-reason { color: var(--text-muted); }
+  .retry-badge { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
+}
 
 .tag {
   display: inline-block;

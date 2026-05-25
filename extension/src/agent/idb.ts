@@ -1,10 +1,15 @@
 // IndexedDB schema and connection for Polaris agent state.
 //
-// Schema version 1. Stores:
+// Schema versions:
+//   1 — initial: scratchpad, findings, memory, events
+//   2 — adds `metrics` (M3.5 telemetry foundation)
+//
+// Stores:
 //   scratchpad  — FIFO ring per task; primary key [taskId, seq]
 //   findings    — structured atomic facts; primary key id (ULID)
 //   memory      — agent-controlled namespaced cells; key [taskId, namespace, key]
 //   events      — audit log for UI replay; primary key [taskId, seq]
+//   metrics     — per-op latency / outcome telemetry; primary key auto-inc
 
 import { openDB } from 'idb';
 import type { IDBPDatabase, DBSchema } from 'idb';
@@ -16,7 +21,28 @@ import type {
 } from '../shared/agent_types';
 
 const DB_NAME = 'polaris';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+
+/**
+ * Telemetry record for one observable operation. Cheap and append-only.
+ * Read by the debug console (`polaris.metrics.summary(taskId)`) to expose
+ * p50/p95 latencies and success rates without a third-party telemetry stack.
+ */
+export interface MetricEntry {
+  /** Auto-incremented primary key. */
+  seq: number;
+  taskId: string;
+  ts: number;
+  /** Layer that produced the metric: 'role', 'tool', 'ollama', etc. */
+  layer: 'role' | 'tool' | 'ollama' | 'breaker' | 'compactor';
+  /** Operation name: 'planner_turn', 'executor_turn', 'tool:echo', etc. */
+  op: string;
+  latencyMs: number;
+  ok: boolean;
+  error?: string;
+  /** Free-form structured payload — kept small. */
+  meta?: Record<string, unknown>;
+}
 
 export interface PolarisDB extends DBSchema {
   scratchpad: {
@@ -42,6 +68,14 @@ export interface PolarisDB extends DBSchema {
     value: AgentEvent;
     indexes: { 'by-task': string };
   };
+  metrics: {
+    key: number;
+    value: MetricEntry;
+    indexes: {
+      'by-task-ts': [string, number];
+      'by-task-op': [string, string];
+    };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<PolarisDB>> | null = null;
@@ -49,7 +83,8 @@ let dbPromise: Promise<IDBPDatabase<PolarisDB>> | null = null;
 export function getDB(): Promise<IDBPDatabase<PolarisDB>> {
   if (!dbPromise) {
     dbPromise = openDB<PolarisDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion) {
+        // v1 stores — idempotent creation.
         if (!db.objectStoreNames.contains('scratchpad')) {
           const s = db.createObjectStore('scratchpad', { keyPath: ['taskId', 'seq'] });
           s.createIndex('by-task', 'taskId');
@@ -66,6 +101,13 @@ export function getDB(): Promise<IDBPDatabase<PolarisDB>> {
         if (!db.objectStoreNames.contains('events')) {
           db.createObjectStore('events', { keyPath: ['taskId', 'seq'] })
             .createIndex('by-task', 'taskId');
+        }
+        // v2 — metrics store. `oldVersion < 2` covers both fresh installs
+        // (oldVersion=0) and existing v1 users upgrading.
+        if (oldVersion < 2 && !db.objectStoreNames.contains('metrics')) {
+          const m = db.createObjectStore('metrics', { keyPath: 'seq', autoIncrement: true });
+          m.createIndex('by-task-ts', ['taskId', 'ts']);
+          m.createIndex('by-task-op', ['taskId', 'op']);
         }
       },
     });

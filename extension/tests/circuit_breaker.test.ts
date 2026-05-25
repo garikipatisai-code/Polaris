@@ -13,6 +13,8 @@ function freshBreaker(overrides: Partial<BreakerState> = {}): BreakerState {
   return {
     repeats: {},
     recentOutcomes: [],
+    recentActionHashes: [],
+    recentUnknownToolFlags: [],
     stepsWithoutProgress: 0,
     lastFindingsCount: 0,
     totalReplans: 0,
@@ -192,5 +194,137 @@ describe('recordTrip', () => {
     expect(state.breaker.trips.length).toBe(5);
     // Newest preserved.
     expect(state.breaker.trips.at(-1)?.reason).toBe('r7');
+  });
+});
+
+describe('distinct-action breaker signal (M2.7.2)', () => {
+  it('does NOT trip until the window is full (no early-task false positives)', () => {
+    // Fill 9 slots with the same action — under DISTINCT_WINDOW=10, no trip.
+    const hashes = Array.from({ length: 9 }, () => actionHash('echo', { text: 'a' }));
+    const result = evaluate(fakeState(freshBreaker({ recentActionHashes: hashes })));
+    expect(result.kind).toBe('ok');
+  });
+
+  it('trips replan when only 1 distinct action in last 10 turns', () => {
+    const hashes = Array.from({ length: 10 }, () => actionHash('echo', { text: 'a' }));
+    const result = evaluate(fakeState(freshBreaker({ recentActionHashes: hashes })));
+    expect(result.kind).toBe('replan');
+    expect(result.kind === 'replan' && result.reason).toMatch(/distinct actions/);
+  });
+
+  it('trips replan when only 2 distinct actions in last 10 turns', () => {
+    // 5×echo, 5×add — 2 distinct, under DISTINCT_MIN=3
+    const hashes = [
+      ...Array.from({ length: 5 }, () => actionHash('echo', { text: 'a' })),
+      ...Array.from({ length: 5 }, () => actionHash('add', { a: 1, b: 1 })),
+    ];
+    const result = evaluate(fakeState(freshBreaker({ recentActionHashes: hashes })));
+    expect(result.kind).toBe('replan');
+  });
+
+  it('does not trip with 3+ distinct actions (healthy task)', () => {
+    const hashes = [
+      actionHash('memory.write', { ns: 'x', key: 'a', value: '1' }),
+      actionHash('memory.write', { ns: 'x', key: 'b', value: '2' }),
+      actionHash('memory.write', { ns: 'x', key: 'c', value: '3' }),
+      actionHash('memory.read', { ns: 'x', key: 'a' }),
+      actionHash('memory.read', { ns: 'x', key: 'b' }),
+      actionHash('memory.read', { ns: 'x', key: 'c' }),
+      actionHash('sum', { numbers: [1, 2, 3] }),
+      actionHash('next_step', {}),
+      actionHash('echo', { text: 'done' }),
+      actionHash('finish', { summary: 'sum is 6' }),
+    ];
+    const result = evaluate(fakeState(freshBreaker({ recentActionHashes: hashes })));
+    expect(result.kind).toBe('ok');
+  });
+
+  it('recordAfter pushes to recentActionHashes and slides window at capacity', () => {
+    let state = fakeState(freshBreaker());
+    for (let i = 0; i < 12; i++) {
+      const update = recordAfter(state, { name: 'echo', args: { text: `t${i}` } }, { ok: true }, 0);
+      state = fakeState(update.breaker);
+    }
+    // Window capped at 10.
+    expect(state.breaker.recentActionHashes.length).toBe(10);
+    // Oldest entries dropped.
+    expect(state.breaker.recentActionHashes[0]).toContain('t2');
+    expect(state.breaker.recentActionHashes.at(-1)).toContain('t11');
+  });
+
+  it('resetForReplan wipes recentActionHashes', () => {
+    const before = freshBreaker({
+      recentActionHashes: [actionHash('echo', {}), actionHash('add', {})],
+    });
+    const after = resetForReplan(before);
+    expect(after.recentActionHashes).toEqual([]);
+  });
+});
+
+describe('hallucinated-tool window (#65)', () => {
+  it('does NOT trip until window is full (≥8 turns)', () => {
+    // Even with all 7 turns being unknown tools, the window isn't full
+    // yet → no trip (early-task false-positive guard).
+    const flags: (0 | 1)[] = [1, 1, 1, 1, 1, 1, 1];
+    const result = evaluate(fakeState(freshBreaker({ recentUnknownToolFlags: flags })));
+    expect(result.kind).toBe('ok');
+  });
+
+  it('trips replan when ≥3 of last 8 turns invoked unknown tools', () => {
+    const flags: (0 | 1)[] = [1, 0, 1, 0, 0, 1, 0, 0];
+    const result = evaluate(fakeState(freshBreaker({ recentUnknownToolFlags: flags })));
+    expect(result.kind).toBe('replan');
+    expect(result.kind === 'replan' && result.reason).toMatch(/unknown-tool/);
+  });
+
+  it('does not trip with 2 unknowns + 6 known (under threshold)', () => {
+    const flags: (0 | 1)[] = [1, 0, 1, 0, 0, 0, 0, 0];
+    const result = evaluate(fakeState(freshBreaker({ recentUnknownToolFlags: flags })));
+    expect(result.kind).toBe('ok');
+  });
+
+  it('recordAfter pushes the unknownTool flag and slides at capacity', () => {
+    let state = fakeState(freshBreaker());
+    // 4 known calls + 3 unknown — ends with 7 entries; window cap is 8.
+    for (let i = 0; i < 4; i++) {
+      const update = recordAfter(
+        state,
+        { name: 'echo', args: { i } },
+        { ok: true, unknownTool: false },
+        0,
+      );
+      state = fakeState(update.breaker);
+    }
+    for (let i = 0; i < 3; i++) {
+      const update = recordAfter(
+        state,
+        { name: `made_up_tool_${i}`, args: {} },
+        { ok: false, unknownTool: true },
+        0,
+      );
+      state = fakeState(update.breaker);
+    }
+    expect(state.breaker.recentUnknownToolFlags).toEqual([0, 0, 0, 0, 1, 1, 1]);
+
+    // One more known call → window has 8 entries, 3 of which are unknowns.
+    const update = recordAfter(
+      state,
+      { name: 'echo', args: {} },
+      { ok: true, unknownTool: false },
+      0,
+    );
+    state = fakeState(update.breaker);
+    expect(state.breaker.recentUnknownToolFlags).toHaveLength(8);
+    expect(state.breaker.recentUnknownToolFlags.filter((f) => f === 1)).toHaveLength(3);
+
+    // evaluate should now trip.
+    const decision = evaluate(state);
+    expect(decision.kind).toBe('replan');
+  });
+
+  it('resetForReplan clears recentUnknownToolFlags', () => {
+    const before = freshBreaker({ recentUnknownToolFlags: [1, 1, 1, 0, 0, 0, 0, 0] });
+    const after = resetForReplan(before);
+    expect(after.recentUnknownToolFlags).toEqual([]);
   });
 });

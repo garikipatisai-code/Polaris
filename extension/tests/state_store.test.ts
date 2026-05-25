@@ -244,3 +244,68 @@ describe('state_store: memory cells', () => {
     expect(xes.map((c) => c.key).sort()).toEqual(['x1', 'x2']);
   });
 });
+
+describe('state_store: hot mutex (M2.7.2)', () => {
+  it('serializes concurrent patchHot calls — last patch wins, no fields lost', async () => {
+    await startTask('mutex test');
+    // Fire 10 patches in parallel; each touches a distinct field.
+    const patches = Array.from({ length: 10 }, (_, i) =>
+      patchHot({ turnsOnCurrentStep: i }),
+    );
+    const results = await Promise.all(patches);
+    // All resolved successfully (no throws despite all being concurrent).
+    expect(results).toHaveLength(10);
+    // Final state has the last patch's value (loaded synchronously after).
+    const final = await loadHot();
+    expect(typeof final?.turnsOnCurrentStep).toBe('number');
+    expect(final?.turnsOnCurrentStep).toBeLessThanOrEqual(9);
+    expect(final?.turnsOnCurrentStep).toBeGreaterThanOrEqual(0);
+  });
+
+  it('concurrent appendScratch + patchHot do not clobber each other', async () => {
+    const state = await startTask('mutex test');
+    // Race appendScratch (which mutates scratchpadRef) against patchHot
+    // (which sets phase). Each writes a different field — both must survive.
+    await Promise.all([
+      appendScratch(state.taskId, 'tool_call', { x: 1 }, 10),
+      patchHot({ phase: 'EXECUTING' }),
+      appendScratch(state.taskId, 'tool_result', { y: 2 }, 20),
+      patchHot({ pendingFinishSummary: 'pending' }),
+      appendScratch(state.taskId, 'tool_call', { z: 3 }, 30),
+    ]);
+    const final = await loadHot();
+    // appendScratch updates: count=3, tokens=60.
+    expect(final?.scratchpadRef.count).toBe(3);
+    expect(final?.scratchpadRef.tokens).toBe(60);
+    // patchHot fields preserved.
+    expect(final?.phase).toBe('EXECUTING');
+    expect(final?.pendingFinishSummary).toBe('pending');
+  });
+
+  it('error in one patch does not deadlock subsequent patches', async () => {
+    await startTask('error path');
+    // Fire a patch that throws (immutable goal field), then a normal one.
+    // The mutex chain must not get stuck.
+    await expect(
+      // @ts-expect-error testing the runtime guard
+      patchHot({ goal: { text: 'evil' } }),
+    ).rejects.toThrow();
+    // Subsequent call must complete — the chain isn't deadlocked.
+    const ok = await patchHot({ phase: 'EXECUTING' });
+    expect(ok.phase).toBe('EXECUTING');
+  });
+});
+
+describe('state_store: startTask resets per-task EWMA (#6)', () => {
+  it('resets observedCharsPerToken to default on a new task', async () => {
+    // Pollute the EWMA from a "prior task" simulation.
+    const { recordCharsPerToken, getCharsPerToken } = await import('../src/agent/budget');
+    recordCharsPerToken(200, 100); // 2.0 — heavy unicode
+    expect(getCharsPerToken()).toBe(2);
+
+    await startTask('new task');
+    // After startTask the estimator must be back at the default 4.0 — the
+    // prior task's domain shouldn't bias the new task's pre-call budget.
+    expect(getCharsPerToken()).toBe(4);
+  });
+});

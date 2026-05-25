@@ -16,7 +16,7 @@ import type { OllamaClient } from '../../background/ollama';
 import type { AgentStateHot } from '../../shared/agent_types';
 import { evaluatorSystemPrompt } from '../prompts/evaluator';
 import { parseJSONPermissive } from './planner';
-import { approxTokens, BUDGETS } from '../budget';
+import { approxTokens, BUDGETS, truncateForReplay } from '../budget';
 import * as store from '../state_store';
 
 export type Verdict = 'done' | 'continue' | 'replan' | 'abort';
@@ -76,9 +76,18 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     };
   }
 
+  // user-role anchor: see planner.ts comment — keeps Qwen3 in structured-
+  // output mode rather than producing a thinking preamble.
+  const userAnchor = triggeredByFinish
+    ? 'Evaluate whether the executor\'s proposed finish answer satisfies the goal. Return JSON only.'
+    : 'Evaluate progress so far. Return your verdict as JSON only.';
+
   let response = await client.chatOnce({
     model,
-    messages: [{ role: 'system', content: systemPrompt }],
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userAnchor },
+    ],
     format: 'json',
     think: thinkingMode,
     signal,
@@ -92,17 +101,31 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
   try {
     parsed = parseJSONPermissive(content);
   } catch {
+    // [system, user-anchor, assistant-failed (truncated), user-nudge] —
+    // see planner.ts. Replay truncation prevents corrupted long outputs
+    // from pushing the retry past BUDGETS.evaluator.
     retried = true;
+    const failedContent = truncateForReplay(content);
+    const retryMessages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userAnchor },
+      { role: 'assistant' as const, content: failedContent },
+      {
+        role: 'user' as const,
+        content:
+          'Your previous output was not valid JSON. Output ONLY a single JSON object with verdict, reason, and optional finalAnswer / replanHint.',
+      },
+    ];
+    const retrySize = approxTokens(retryMessages.map((m) => m.content).join('\n'));
+    if (retrySize > BUDGETS.evaluator) {
+      retryMessages[2] = {
+        role: 'assistant',
+        content: '[previous output was unparseable JSON — produce the verdict JSON now]',
+      };
+    }
     response = await client.chatOnce({
       model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'system',
-          content:
-            'Your previous output was not valid JSON. Output ONLY a single JSON object with verdict, reason, and optional finalAnswer / replanHint.',
-        },
-      ],
+      messages: retryMessages,
       format: 'json',
       think: false,
       signal,

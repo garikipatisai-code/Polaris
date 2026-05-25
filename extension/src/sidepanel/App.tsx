@@ -147,6 +147,41 @@ export default function App() {
           }
           setAgentRun((run) => (run ? { ...run, events: [...run.events, msg.event] } : run));
           break;
+        case 'agent.events': {
+          // Batched event replay (resume path). One postMessage carrying
+          // up to ~100 events; expand here into a single setAgentRun
+          // update so the timeline doesn't trigger N React re-renders.
+          if (msg.events.length === 0) break;
+          // Find the latest planner role_end so we lift the plan / criteria
+          // exactly like the singleton case would have, in one pass.
+          let plannerPlan: Plan | undefined;
+          let plannerCriteria: string[] | undefined;
+          for (const ev of msg.events) {
+            if (ev.type === 'role_end') {
+              const d = ev.data as
+                | { role?: string; plan?: Plan; successCriteria?: string[] }
+                | undefined;
+              if (d?.role === 'planner' && d.plan) {
+                plannerPlan = d.plan;
+                plannerCriteria = d.successCriteria ?? plannerCriteria;
+              }
+            }
+          }
+          // A batched replay never leaves the UI in "awaiting model" — by
+          // definition every event in it has already settled.
+          setLastRoleStartAt(null);
+          setAgentRun((run) =>
+            run
+              ? {
+                  ...run,
+                  plan: plannerPlan ?? run.plan,
+                  successCriteria: plannerCriteria ?? run.successCriteria,
+                  events: [...run.events, ...msg.events],
+                }
+              : run,
+          );
+          break;
+        }
         case 'agent.terminal':
           setLastRoleStartAt(null);
           setAgentRun((run) =>
@@ -645,10 +680,15 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
       return <><span className="tag">{String(d.role ?? '?')}</span> start{d.stepId ? ` (step ${String(d.stepId)})` : ''}</>;
     case 'role_end': {
       const ok = d.ok ? '✓' : '✗';
-      const retried = d.retried ? ' (retried)' : '';
       const pt = d.promptTokens != null ? ` · ${String(d.promptTokens)}t in` : '';
       const gt = d.genTokens != null ? ` / ${String(d.genTokens)}t out` : '';
-      return <><span className="tag">{String(d.role ?? '?')}</span> {ok}{retried}{pt}{gt}</>;
+      return (
+        <>
+          <span className="tag">{String(d.role ?? '?')}</span>
+          {d.retried ? <span className="retry-badge">retried</span> : null}
+          {' '}{ok}{pt}{gt}
+        </>
+      );
     }
     case 'tool_call': {
       const args = d.args ? JSON.stringify(d.args) : '{}';
@@ -659,10 +699,35 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
       const summary = d.ok ? truncate(JSON.stringify(d.data ?? {}), 80) : String(d.error ?? '');
       return <><span className="tag">→</span> {ok} {summary}</>;
     }
-    case 'breaker':
-      return <><span className="tag">breaker</span> {String(d.reason ?? '?')}</>;
-    case 'compaction':
-      return <><span className="tag">compact</span> {String(d.discarded ?? '?')} discarded → {String(d.produced ?? '?')} findings</>;
+    case 'breaker': {
+      const action = String(d.action ?? 'replan');
+      return (
+        <>
+          <span className="breaker-icon" aria-hidden>⚠</span>
+          <span className="breaker-label">Circuit breaker: {action}</span>
+          <span className="breaker-reason"> — {String(d.reason ?? 'no reason')}</span>
+        </>
+      );
+    }
+    case 'compaction': {
+      const discarded = Number(d.discarded ?? 0);
+      const produced = Number(d.produced ?? 0);
+      const pt = d.promptTokens != null ? Number(d.promptTokens) : null;
+      const gt = d.genTokens != null ? Number(d.genTokens) : null;
+      return (
+        <>
+          <span className="compaction-icon" aria-hidden>↘</span>
+          <span className="compaction-label">
+            Compaction: archived {discarded} {discarded === 1 ? 'entry' : 'entries'} → {produced} {produced === 1 ? 'finding' : 'findings'}
+          </span>
+          {(pt != null || gt != null) && (
+            <div className="compaction-cost">
+              cost: {pt ?? '?'}t in / {gt ?? '?'}t out
+            </div>
+          )}
+        </>
+      );
+    }
     case 'verdict':
       return <><span className="tag">verdict</span> {String(d.verdict ?? '?')}{d.reason ? ` — ${String(d.reason)}` : ''}</>;
     case 'error':

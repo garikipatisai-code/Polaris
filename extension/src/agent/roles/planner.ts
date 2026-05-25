@@ -13,7 +13,7 @@ import type { OllamaClient } from '../../background/ollama';
 import type { ToolRegistry } from '../tools';
 import type { AgentStateHot, Plan, PlanStep } from '../../shared/agent_types';
 import { plannerSystemPrompt } from '../prompts/planner';
-import { approxTokens, BUDGETS } from '../budget';
+import { approxTokens, BUDGETS, truncateForReplay } from '../budget';
 import * as store from '../state_store';
 
 export interface PlannerInput {
@@ -86,10 +86,22 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
     };
   }
 
+  // The user-role anchor is critical for tool-call/JSON reliability on Qwen3:
+  // its chat template treats `user` as the active instruction channel, so a
+  // system-only conversation can produce a thinking-aloud preamble before
+  // the JSON. A short generic anchor pushes the model into structured-output
+  // mode without leaking task-specific text.
+  const userAnchor = isInitial
+    ? 'Produce the initial JSON plan now.'
+    : 'Produce the revised JSON plan now, taking the replan hint into account.';
+
   // First attempt — thinking per setting.
   let response = await client.chatOnce({
     model,
-    messages: [{ role: 'system', content: systemPrompt }],
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userAnchor },
+    ],
     format: 'json',
     think: thinkingMode,
     signal,
@@ -103,19 +115,35 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
   try {
     parsed = parseJSONPermissive(content);
   } catch {
-    // Retry once — thinking OFF, terser nudge.
+    // Retry with [system, user-anchor, assistant-failed, user-nudge].
+    // Showing the model its own broken output + a corrective user turn beats
+    // appending a second `system` message: Qwen3 templates emit only one
+    // system block, so the second `system` gets inlined or dropped.
+    // Truncate the replay so a corrupted long output doesn't blow past
+    // BUDGETS.planner on the retry call.
     retried = true;
+    const failedContent = truncateForReplay(content);
+    const retryMessages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userAnchor },
+      { role: 'assistant' as const, content: failedContent },
+      {
+        role: 'user' as const,
+        content:
+          'Your previous output was not valid JSON. Output ONLY a single JSON object, ' +
+          'no prose, no markdown fences, no leading or trailing text.',
+      },
+    ];
+    const retrySize = approxTokens(retryMessages.map((m) => m.content).join('\n'));
+    if (retrySize > BUDGETS.planner) {
+      retryMessages[2] = {
+        role: 'assistant',
+        content: '[previous output was unparseable JSON — produce the JSON now]',
+      };
+    }
     response = await client.chatOnce({
       model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'system',
-          content:
-            'Your previous output was not valid JSON. Output ONLY a single JSON object, ' +
-            'no prose, no markdown fences, no leading or trailing text.',
-        },
-      ],
+      messages: retryMessages,
       format: 'json',
       think: false,
       signal,

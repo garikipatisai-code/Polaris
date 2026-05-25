@@ -10,11 +10,13 @@
 
 import type { OllamaClient } from '../../background/ollama';
 import type { ToolRegistry, ToolContext } from '../tools';
+import { SPECIAL_TOOLS } from '../tools';
 import type { AgentStateHot } from '../../shared/agent_types';
 import type { ToolCall, ToolResult } from '../../shared/tool_types';
 import * as store from '../state_store';
 import { executorSystemPrompt, executorRetryNudge } from '../prompts/executor';
-import { approxTokens } from '../budget';
+import { approxTokens, truncateForReplay } from '../budget';
+import { log } from '../log';
 
 export interface ExecutorInput {
   state: AgentStateHot;
@@ -66,10 +68,20 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
     };
   }
 
+  // The user-role anchor is critical for tool-call reliability on Qwen3
+  // chat templates: a system-only conversation often produces prose instead
+  // of tool_calls because the template treats the user turn as the "active
+  // instruction channel." A short, generic anchor pushes the model into
+  // tool-calling mode without leaking task-specific text.
+  const userAnchor = 'Take the next action toward completing the goal. Call exactly one tool now.';
+
   // First attempt
   const first = await client.chatOnce({
     model,
-    messages: [{ role: 'system', content: systemPrompt }],
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userAnchor },
+    ],
     tools: toolDefs,
     think: false,
     signal,
@@ -80,21 +92,40 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
   let retried = false;
 
   // Empty-tool-call retry — Ollama tool-call success rate is ~80% per probe data.
+  // Pattern: keep the user anchor, append a TRUNCATED echo of the failed
+  // assistant turn so the model can see what it produced wrong, then a
+  // corrective user turn. Truncating the replay (vs replaying the full
+  // failed content verbatim) keeps the retry prompt under budget — long
+  // failed outputs don't blow past BUDGETS.executor on the retry call.
   if (toolCalls.length === 0) {
     retried = true;
     const nudge = executorRetryNudge(toolNames);
+    const failedContent = truncateForReplay(first.message?.content ?? '');
+    const retryMessages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userAnchor },
+      { role: 'assistant' as const, content: failedContent },
+      { role: 'user' as const, content: nudge },
+    ];
+    // Budget guard on the retry path: if even the truncated replay pushes us
+    // over budget, fall back to a placeholder so we still get a retry attempt
+    // rather than failing pre-flight.
+    const retrySize = approxTokens(retryMessages.map((m) => m.content).join('\n'));
+    if (retrySize > state.budgets.executor.max) {
+      retryMessages[2] = {
+        role: 'assistant',
+        content: '[previous output was unparseable — call exactly one tool now]',
+      };
+    }
     const second = await client.chatOnce({
       model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'system', content: nudge },
-      ],
+      messages: retryMessages,
       tools: toolDefs,
       think: false,
       signal,
     });
     toolCalls = second.message?.tool_calls ?? [];
-    promptTokens += second.prompt_eval_count ?? approxTokens(systemPrompt + nudge);
+    promptTokens += second.prompt_eval_count ?? approxTokens(systemPrompt + nudge + failedContent);
     genTokens += second.eval_count ?? 0;
   }
 
@@ -108,12 +139,21 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
     };
   }
 
+  // Multi-tool-call: take the first, but log a warning so we can spot models
+  // that frequently produce extras (would suggest tightening the prompt).
+  if (toolCalls.length > 1) {
+    log('warn', 'executor', `model produced ${toolCalls.length} tool calls; using first only`, {
+      first: toolCalls[0]?.function.name,
+      dropped: toolCalls.slice(1).map((c) => c.function.name),
+    });
+  }
+
   const call = toolCalls[0]!;
   const ctx: ToolContext = { taskId: state.taskId, stepId: state.currentStepId };
   const result = await registry.dispatch(call, ctx);
 
   // `finish` is special: orchestrator routes to EVALUATING.
-  const isFinish = call.function.name === 'finish';
+  const isFinish = call.function.name === SPECIAL_TOOLS.FINISH;
   const finishSummary = isFinish
     ? (call.function.arguments as { summary?: string }).summary
     : undefined;

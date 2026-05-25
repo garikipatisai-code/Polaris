@@ -1,6 +1,6 @@
 // Polaris background service worker.
-// M1 scope: route messages between the side panel and Ollama.
-// M2.1: persistent state store + types added; agent loop arrives in M2.3+.
+// Routes side-panel messages, drives the Orchestrator, exposes debug
+// primitives on globalThis.polaris. The watchdog ticks via chrome.alarms.
 
 import { PORT_NAME, RequestMessage, ResponseMessage } from '../shared/messages';
 import { getSettings, setSettings } from './settings';
@@ -12,6 +12,7 @@ import { ulid } from '../agent/ulid';
 import * as tools from '../agent/tools';
 import * as logModule from '../agent/log';
 import * as stressTest from '../agent/stress_test';
+import * as metrics from '../agent/metrics';
 import { Orchestrator } from '../agent/orchestrator';
 
 // Expose agent primitives on globalThis.polaris so the SW DevTools console
@@ -29,10 +30,11 @@ import { Orchestrator } from '../agent/orchestrator';
   clearLogs: logModule.clearLogs,
   stressTest: stressTest.stressTest,
   stressReset: stressTest.stressReset,
+  metrics,
 };
 console.log(
   '[polaris] state + tools primitives → globalThis.polaris ' +
-  '(try polaris.dumpLogs() or polaris.stressTest())',
+  '(try polaris.dumpLogs(), polaris.metrics.summary(taskId), or polaris.stressTest())',
 );
 
 // Open the side panel when the toolbar icon is clicked.
@@ -273,6 +275,30 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
   const settings = await getSettings();
   const client = new OllamaClient(settings.ollamaBaseUrl);
 
+  // Pre-flight: confirm Ollama is reachable BEFORE we spin up an orchestrator.
+  // Without this, a typo'd URL or down server forces the user to wait the
+  // full Planner timeout (5 min default) for a "wrong URL" failure that a
+  // 10-second ping could surface immediately.
+  const ping = await client.ping();
+  if (!ping.ok) {
+    send(port, {
+      type: 'agent.terminal',
+      phase: 'ABORTED',
+      error: `Ollama unreachable at ${settings.ollamaBaseUrl}: ${ping.error ?? 'unknown'}. ` +
+        `Check the URL in Polaris settings and that the server is running.`,
+    });
+    return;
+  }
+  if (!ping.models?.includes(settings.model)) {
+    send(port, {
+      type: 'agent.terminal',
+      phase: 'ABORTED',
+      error: `model "${settings.model}" not present at ${settings.ollamaBaseUrl}. ` +
+        `Available: ${(ping.models ?? []).slice(0, 5).join(', ') || '(none)'}.`,
+    });
+    return;
+  }
+
   let lastSummary: string | undefined;
   let lastError: string | undefined;
 
@@ -365,16 +391,16 @@ async function handleAgentResume(port: chrome.runtime.Port): Promise<void> {
   // scratchpad full of context the user can't see.
   try {
     const persisted = await stateStore.eventsSince(state.taskId, 0);
-    // Drop the resume planner event we just synthesized to avoid duplicate.
     const replayable = persisted.slice(-100); // cap for very long tasks
-    for (const ev of replayable) {
-      send(port, {
-        type: 'agent.event',
-        event: { type: ev.type, data: ev.data },
-      });
-    }
     if (replayable.length > 0) {
-      console.info(`[polaris] resume: replayed ${replayable.length} events from IDB`);
+      // One batched postMessage instead of N — preserves order, slashes
+      // structured-clone overhead, and avoids saturating the port queue
+      // when a long-running task has hundreds of events.
+      send(port, {
+        type: 'agent.events',
+        events: replayable.map((ev) => ({ type: ev.type, data: ev.data })),
+      });
+      console.info(`[polaris] resume: replayed ${replayable.length} events from IDB (batched)`);
     }
   } catch (e) {
     console.warn('[polaris] resume: failed to replay events from IDB', e);

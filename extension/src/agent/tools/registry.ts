@@ -75,7 +75,14 @@ export class ToolRegistry {
   async dispatch(call: ToolCall, ctx: ToolContext): Promise<ToolResult> {
     const handler = this.tools.get(call.function.name);
     if (!handler) {
-      return { ok: false, error: `unknown tool: ${call.function.name}` };
+      return {
+        ok: false,
+        error: `unknown tool: ${call.function.name}`,
+        // Mark explicitly so the breaker can distinguish "model invented
+        // a tool" from "registered tool returned an error" — different
+        // recovery paths.
+        unknownTool: true,
+      };
     }
     let parsed: unknown;
     try {
@@ -96,10 +103,15 @@ export class ToolRegistry {
       }
       return { ok: true, data: result };
     } catch (e) {
-      return {
+      // Browser tools throw BrowserToolError to mark fatal vs recoverable.
+      // The `fatal` flag is plumbed through to the circuit breaker.
+      const err = e as Error & { fatal?: boolean };
+      const out: ToolResult = {
         ok: false,
-        error: `${call.function.name} threw: ${truncate((e as Error).message, 200)}`,
+        error: `${call.function.name} threw: ${truncate(err.message, 200)}`,
       };
+      if (typeof err.fatal === 'boolean') out.fatal = err.fatal;
+      return out;
     }
   }
 }

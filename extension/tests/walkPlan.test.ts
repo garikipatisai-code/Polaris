@@ -1,43 +1,11 @@
-// walkPlan is a private helper inside orchestrator.ts. To test it without
-// pulling in the orchestrator's heavy imports (chrome APIs etc.), the
-// function is duplicated here from the source.  If the orchestrator's copy
-// drifts, this test will fail to mirror reality — that's an acceptable
-// signal that we should extract walkPlan into its own file.
+// walkPlan is exported from orchestrator.ts (post-arch-nemesis #4). Earlier
+// rounds duplicated the function here to avoid pulling chrome-API-heavy
+// imports — that pattern was a false-confidence trap (the test passed even
+// when the source drifted) and has been removed.
 
 import { describe, expect, it } from 'vitest';
 import type { Plan, PlanStep } from '../src/shared/agent_types';
-
-// ---- copy of orchestrator.ts walkPlan (keep in sync) ----
-function walkPlan(plan: Plan, currentStepId: string | null): { plan: Plan; nextStepId: string | null } {
-  if (currentStepId === null) {
-    return { plan, nextStepId: null };
-  }
-  const newRootSteps: PlanStep[] = plan.rootSteps.map((s) => ({ ...s }));
-  let nextStepId: string | null = null;
-  let foundCurrent = false;
-  for (let i = 0; i < newRootSteps.length; i++) {
-    if (newRootSteps[i]!.id === currentStepId) {
-      foundCurrent = true;
-      newRootSteps[i] = { ...newRootSteps[i]!, status: 'done' };
-      for (let j = i + 1; j < newRootSteps.length; j++) {
-        if (newRootSteps[j]!.status === 'pending' || newRootSteps[j]!.status === 'active') {
-          newRootSteps[j] = { ...newRootSteps[j]!, status: 'active' };
-          nextStepId = newRootSteps[j]!.id;
-          break;
-        }
-      }
-      break;
-    }
-  }
-  if (!foundCurrent) {
-    return { plan, nextStepId: null };
-  }
-  return {
-    plan: { ...plan, rootSteps: newRootSteps },
-    nextStepId,
-  };
-}
-// ---- end copy ----
+import { walkPlan } from '../src/agent/orchestrator';
 
 function makePlan(specs: { id: string; status: PlanStep['status']; children?: PlanStep[] }[]): Plan {
   return {

@@ -59,6 +59,13 @@ export type ResponseMessage =
   | { type: 'ollama.ping.result'; ok: boolean; error?: string; models?: string[] }
   | { type: 'agent.started'; taskId: string; goal: string }
   | { type: 'agent.event'; event: AgentEventPayload }
+  /**
+   * Batched resume-time event replay. Used by `agent.resume` to send
+   * the entire persisted event log as a single message instead of N
+   * separate `agent.event` postMessages. The panel handler expands the
+   * batch and processes each event identically to a singleton.
+   */
+  | { type: 'agent.events'; events: AgentEventPayload[] }
   | { type: 'agent.terminal'; phase: 'DONE' | 'ABORTED'; summary?: string; error?: string }
   | { type: 'agent.snapshot'; state: AgentStateHot | null };
 

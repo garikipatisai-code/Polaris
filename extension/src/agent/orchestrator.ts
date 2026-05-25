@@ -4,28 +4,30 @@
 // persistent state via state_store, invokes role functions, dispatches
 // tools, emits events for the UI.
 //
-// M2.5 scope:
-//   - Real Planner role (initial + replan)
-//   - Executor loop with mock tools
+// Includes (all shipped):
+//   - Planner role (initial + replan)
+//   - Executor loop with mock + browser tools
 //   - Compactor fires before each Executor turn when scratchpad ≥ 80%
 //     of executor budget
 //   - Evaluator runs after every EVAL_EVERY_N_STEPS turns AND on finish
 //   - Verdict routes: done → DONE, continue → EXECUTING,
 //     replan → PLANNING (with hint), abort → ABORTED
-//
-// Still missing (lands later):
-//   - Circuit breaker (action repetition / stuck-loop detection) → M2.6
-//   - chrome.alarms watchdog + crash-resume → M2.6
-//   - Synthetic stress test + UI polish → M2.7
+//   - Circuit breaker (action-repeat, distinct-action, hallucinated-tool,
+//     no-progress, total-replan-cap, fatal-tool)
+//   - Heartbeat keeping the watchdog from stomping on long Planner calls
+//   - Crash-resume via state_store.loadHot + replay-from-IDB
+//   - closeOwnedTabs cleanup at terminal phase
 
 import type { OllamaClient } from '../background/ollama';
 import { ToolRegistry, createDefaultRegistry } from './tools';
+import { closeOwnedTabs } from './tools';
 import { runExecutor } from './roles/executor';
 import { runPlanner } from './roles/planner';
 import { runEvaluator } from './roles/evaluator';
 import { runCompactor } from './roles/compactor';
 import * as store from './state_store';
 import * as breaker from './circuit_breaker';
+import { recordMetric } from './metrics';
 import { log } from './log';
 import type {
   AgentStateHot,
@@ -40,6 +42,14 @@ const EVAL_EVERY_N_STEPS = 5;
 
 /** Force-advance the plan step if the Executor spends this many turns on it without calling next_step. */
 const MAX_TURNS_PER_STEP = 8;
+
+/**
+ * Bump lastTouch this often during a long-running task so the watchdog can't
+ * mistakenly abort an in-flight Planner / Evaluator call (those can take 30+ s
+ * on slow hardware). The watchdog's stale threshold is 5 min, so 30 s gives
+ * plenty of margin.
+ */
+const LAST_TOUCH_INTERVAL_MS = 30_000;
 
 export interface OrchestratorEvent {
   type: AgentEventType;
@@ -70,6 +80,7 @@ export class Orchestrator {
   private readonly evaluatorThinking: boolean;
   private abort: AbortController | null = null;
   private stepsSinceEval = 0;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: OrchestratorOptions) {
     this.client = opts.client;
@@ -87,6 +98,7 @@ export class Orchestrator {
   async start(goalText: string): Promise<AgentStateHot> {
     this.abort = new AbortController();
     this.stepsSinceEval = 0;
+    this.startHeartbeat();
     const fresh = await store.startTask(goalText);
     await this.emit(fresh.taskId, 'phase', { phase: 'PLANNING' });
     return await this.runPlannerStep(fresh, /*isInitial=*/ true, /*replanHint=*/ undefined);
@@ -101,6 +113,7 @@ export class Orchestrator {
   async resume(): Promise<AgentStateHot> {
     this.abort = new AbortController();
     this.stepsSinceEval = 0;
+    this.startHeartbeat();
     const state = await store.loadHot();
     if (!state) throw new Error('resume: no task in storage');
     if (state.phase === 'IDLE' || state.phase === 'DONE' || state.phase === 'ABORTED') {
@@ -117,6 +130,72 @@ export class Orchestrator {
 
   /** Run the loop until a terminal phase (DONE / ABORTED). */
   async runUntilTerminal(): Promise<AgentStateHot> {
+    let taskIdForCleanup: string | null = null;
+    try {
+      const final = await this.runUntilTerminalInner();
+      taskIdForCleanup = final.taskId;
+      return final;
+    } catch (e) {
+      // Any uncaught error from a role call (e.g., Ollama HTTP 503 after
+      // retries exhausted, or the timeout fired) leaves the task in a
+      // non-terminal phase. Transition to ABORTED before re-raising so a
+      // subsequent `resume()` doesn't pick up the dead task and reissue
+      // the failing call. The watchdog would eventually catch this, but
+      // explicit transition is faster and more honest.
+      try {
+        const cur = await store.loadHot();
+        if (cur && cur.phase !== 'DONE' && cur.phase !== 'ABORTED') {
+          await store.patchHot({ phase: 'ABORTED' });
+          taskIdForCleanup = cur.taskId;
+          await this.emit(cur.taskId, 'error', {
+            error: (e as Error).message ?? 'orchestrator failed',
+          });
+          await this.emit(cur.taskId, 'verdict', {
+            verdict: 'abort',
+            reason: `unrecoverable: ${(e as Error).message ?? 'unknown'}`,
+          });
+        } else if (cur) {
+          taskIdForCleanup = cur.taskId;
+        }
+      } catch (transitionErr) {
+        // Hot state may be cleared by a concurrent `agent.reset` — that's a
+        // legitimate race and we just continue with the rethrow. Anything
+        // else is suspicious; log so it's not silently swallowed.
+        const msg = (transitionErr as Error).message ?? '';
+        if (!/no hot state/i.test(msg)) {
+          console.warn(
+            '[polaris] runUntilTerminal: failed to transition to ABORTED on error path',
+            transitionErr,
+          );
+        }
+      }
+      throw e;
+    } finally {
+      this.stopHeartbeat();
+      // Close tabs the agent opened during this task. Best-effort with a hard
+      // 2-second deadline — a hung chrome.tabs.remove (DevTools session
+      // conflict, tab in unload, Chrome bug) can NOT be allowed to wedge
+      // runUntilTerminal forever. We race against a sleep and log on cap.
+      if (taskIdForCleanup !== null) {
+        const cleanup = closeOwnedTabs(taskIdForCleanup);
+        const deadline = new Promise<'deadline'>((resolve) =>
+          setTimeout(() => resolve('deadline'), 2_000),
+        );
+        try {
+          const result = await Promise.race([cleanup.then(() => 'done' as const), deadline]);
+          if (result === 'deadline') {
+            console.warn(
+              `[polaris] closeOwnedTabs(${taskIdForCleanup}) did not complete within 2s; abandoning`,
+            );
+          }
+        } catch (e) {
+          console.warn('[polaris] closeOwnedTabs at terminal failed', e);
+        }
+      }
+    }
+  }
+
+  private async runUntilTerminalInner(): Promise<AgentStateHot> {
     let state = await store.loadHot();
     if (!state) throw new Error('runUntilTerminal: no active task');
     let stepCount = 0;
@@ -180,9 +259,44 @@ export class Orchestrator {
   /** Abort the in-flight task. */
   async stop(): Promise<void> {
     this.abort?.abort();
+    this.stopHeartbeat();
     const state = await store.loadHot();
     if (state && state.phase !== 'DONE' && state.phase !== 'ABORTED') {
       await this.finalizeAborted('user_abort');
+    }
+  }
+
+  /**
+   * Within-SW heartbeat: bumps `lastTouch` every LAST_TOUCH_INTERVAL_MS
+   * while `runUntilTerminal` is in-flight. Specifically protects against
+   * the watchdog (chrome.alarms in service_worker.ts) tripping its 5-min
+   * stale threshold during a single long Planner / Evaluator call —
+   * thinking-mode runs against a slow box can plausibly run 1–4 minutes,
+   * and without this heartbeat the watchdog could mark such a task ABORTED
+   * and race the in-flight call's own write of EXECUTING.
+   *
+   * Limits: this only buys safety inside a healthy SW lifetime. If the SW
+   * itself dies mid-task, the heartbeat dies with it — crash-resume is
+   * then handled separately by `resume()`, whose first `patchHot` bumps
+   * `lastTouch` and re-claims the task. The heartbeat does NOT defend
+   * against SW death.
+   *
+   * Does not race with patchHot — both go through the state_store hot
+   * mutex (which serializes writes).
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      void store.bumpLastTouch().catch((e) => {
+        console.warn('[polaris] heartbeat bumpLastTouch failed', e);
+      });
+    }, LAST_TOUCH_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
     }
   }
 
@@ -223,6 +337,7 @@ export class Orchestrator {
     }
 
     await this.emit(prepared.taskId, 'role_start', { role: 'planner', isInitial, replanHint });
+    const t0 = performance.now();
     const result = await runPlanner({
       state: prepared,
       registry: this.registry,
@@ -232,6 +347,16 @@ export class Orchestrator {
       isInitial,
       replanHint,
       thinkingMode: this.plannerThinking,
+    });
+    const latencyMs = Math.round(performance.now() - t0);
+    void recordMetric({
+      taskId: prepared.taskId,
+      layer: 'role',
+      op: isInitial ? 'planner_initial' : 'planner_replan',
+      latencyMs,
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+      meta: { promptTokens: result.promptTokens, genTokens: result.genTokens, retried: result.retried },
     });
 
     if (!result.ok || !result.plan) {
@@ -285,12 +410,28 @@ export class Orchestrator {
     const step = state.plan.rootSteps.find((s) => s.id === state.currentStepId) ?? null;
     await this.emit(state.taskId, 'role_start', { role: 'executor', stepId: step?.id });
 
+    const t0 = performance.now();
     const result = await runExecutor({
       state,
       registry: this.registry,
       client: this.client,
       model: this.model,
       signal: this.abort?.signal,
+    });
+    const latencyMs = Math.round(performance.now() - t0);
+    void recordMetric({
+      taskId: state.taskId,
+      layer: 'role',
+      op: 'executor_turn',
+      latencyMs,
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+      meta: {
+        promptTokens: result.promptTokens,
+        genTokens: result.genTokens,
+        retried: result.retried,
+        toolName: result.toolCall?.function.name,
+      },
     });
 
     if (result.toolCall) {
@@ -338,7 +479,11 @@ export class Orchestrator {
       const update = breaker.recordAfter(
         next,
         planned,
-        { ok: result.toolResult.ok, fatal: result.toolResult.fatal },
+        {
+          ok: result.toolResult.ok,
+          fatal: result.toolResult.fatal,
+          unknownTool: result.toolResult.unknownTool,
+        },
         findingsCount,
       );
       next = await store.patchHot({ breaker: update.breaker });
@@ -417,8 +562,19 @@ export class Orchestrator {
       next = await store.patchHot({ turnsOnCurrentStep: turnsOnStep });
     }
 
-    if (!result.ok) {
-      // M2.5: still bail on first hard tool error (no breaker yet — M2.6).
+    if (!result.ok && !result.toolCall) {
+      // The Executor itself failed BEFORE getting a tool call out of the
+      // model — typically "no tool call after retry" when qwen3.5 returns
+      // empty tool_calls twice in a row. No breaker signal exists for this
+      // case (we don't know what the model meant to do), so we hard-bail.
+      //
+      // When `result.toolCall` IS present, even if its tool result was
+      // not-ok, the breaker has already had its chance to record the
+      // failure and decide replan/abort/ok above. Don't pre-empt it —
+      // recoverable tool errors are exactly what the breaker exists to
+      // handle. (Earlier this branch fired for ALL `!result.ok`, which
+      // pre-empted the unknown-tool / repeated-action breaker windows
+      // before they could fill.)
       const aborted = await store.patchHot({ phase: 'ABORTED' });
       await this.emit(aborted.taskId, 'error', { error: result.error ?? 'unknown executor error' });
       return aborted;
@@ -462,9 +618,11 @@ export class Orchestrator {
       plan: result.plan,
       currentStepId: result.nextStepId,
       turnsOnCurrentStep: 0,
-      // Reset action-repeat counter — a different step's tool calls are
-      // legitimately different actions, not stuck-loop signal.
-      breaker: { ...state.breaker, repeats: {} },
+      // Reset BOTH per-action counters: a different step's tool calls are
+      // legitimately different actions, not stuck-loop signal. Without
+      // clearing recentActionHashes, the distinct-action breaker would
+      // immediately trip after a force-advance from a single-tool step.
+      breaker: { ...state.breaker, repeats: {}, recentActionHashes: [] },
     });
     await this.emit(next.taskId, 'phase', {
       step_advance: true,
@@ -481,6 +639,7 @@ export class Orchestrator {
       role: 'evaluator',
       trigger: triggeredByFinish ? 'finish' : 'periodic',
     });
+    const t0 = performance.now();
     const result = await runEvaluator({
       state,
       client: this.client,
@@ -488,6 +647,15 @@ export class Orchestrator {
       signal: this.abort?.signal,
       thinkingMode: this.evaluatorThinking,
       triggeredByFinish,
+    });
+    void recordMetric({
+      taskId: state.taskId,
+      layer: 'role',
+      op: triggeredByFinish ? 'evaluator_finish' : 'evaluator_periodic',
+      latencyMs: Math.round(performance.now() - t0),
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+      meta: { verdict: result.verdict, promptTokens: result.promptTokens, genTokens: result.genTokens, retried: result.retried },
     });
 
     // Always update budget regardless of outcome.
@@ -605,6 +773,7 @@ export class Orchestrator {
     const allScratch = await store.readScratchAll(state.taskId);
     const existingKeys = await store.existingFindingKeys(state.taskId);
 
+    const t0 = performance.now();
     const result = await runCompactor({
       goal: state.goal.text,
       scratchEntries: allScratch,
@@ -612,6 +781,21 @@ export class Orchestrator {
       client: this.client,
       model: this.model,
       signal: this.abort?.signal,
+    });
+    void recordMetric({
+      taskId: state.taskId,
+      layer: 'role',
+      op: 'compactor_pass',
+      latencyMs: Math.round(performance.now() - t0),
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+      meta: {
+        scratchEntries: allScratch.length,
+        findingsProduced: result.findings?.length ?? 0,
+        promptTokens: result.promptTokens,
+        genTokens: result.genTokens,
+        retried: result.retried,
+      },
     });
 
     if (!result.ok || !result.findings) {
@@ -623,8 +807,8 @@ export class Orchestrator {
         genTokens: result.genTokens,
       });
       // Continue executing without compacting — scratchpad will keep growing
-      // until the Executor's per-call budget guard refuses it. M2.6 breaker
-      // will then nudge / abort.
+      // until the Executor's per-call budget guard refuses it. The breaker
+      // will then nudge / abort via the no-progress signal.
       return await store.patchHot({ phase: 'EXECUTING' });
     }
 
@@ -645,7 +829,17 @@ export class Orchestrator {
     const compactedSeqs = allScratch.map((e) => e.seq);
     await store.deleteScratchSeqs(state.taskId, compactedSeqs);
 
-    const back = await store.patchHot({ phase: 'EXECUTING' });
+    // Roll the compactor's token usage into the running totalTokens. The role
+    // doesn't have a per-role budget cell in BudgetState (only the three call
+    // sites that matter for hot-path latency have those); but the compactor's
+    // cost is real and we want it visible in the per-task tally.
+    const back = await store.patchHot({
+      phase: 'EXECUTING',
+      budgets: {
+        ...state.budgets,
+        totalTokens: state.budgets.totalTokens + result.promptTokens + result.genTokens,
+      },
+    });
     await this.emit(back.taskId, 'compaction', {
       discarded: compactedSeqs.length,
       produced: result.findings.length,
@@ -685,8 +879,12 @@ export class Orchestrator {
  *
  * Children stay as-is — M2.6.3 only walks root steps. M2.7+ may add
  * sub-step traversal if needed.
+ *
+ * Exported so tests can hold the real implementation under property-based
+ * verification rather than duplicating it (the duplicate-and-comment-the-
+ * drift-risk pattern that arch-nemesis #4 caught).
  */
-function walkPlan(plan: Plan, currentStepId: string | null): { plan: Plan; nextStepId: string | null } {
+export function walkPlan(plan: Plan, currentStepId: string | null): { plan: Plan; nextStepId: string | null } {
   if (currentStepId === null) {
     return { plan, nextStepId: null };
   }

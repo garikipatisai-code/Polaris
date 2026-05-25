@@ -2,10 +2,12 @@
 //
 // We use a chars/4 heuristic for *pre-call* budget gating (we have to decide
 // whether to call the model before we know its exact tokenization). After
-// each Ollama response we reconcile the running total from the actual
-// `prompt_eval_count` / `eval_count` the server reports — see budget.recordActual().
+// each Ollama response we reconcile the running ratio against the actual
+// `prompt_eval_count` / promptChars pair. This is critical for unicode-heavy
+// inputs (€, ★, Chinese) where BPE tokens-per-char is much lower than 4 —
+// an underestimate would let an oversized prompt slip past the budget guard.
 //
-// This avoids shipping a 1.5 MB tokenizer for a 10% improvement in estimation.
+// EWMA smoothing (α=0.2) and bounds [1.5, 8] keep the estimate sane.
 
 export type Role = 'executor' | 'planner' | 'evaluator' | 'compactor';
 
@@ -28,9 +30,48 @@ export const COMPACT_THRESHOLD = 0.8;
  */
 export const COMPACT_ENTRY_COUNT = 10;
 
+// ----------------------------------------------------------------------------
+// Empirical chars-per-token reconciliation
+// ----------------------------------------------------------------------------
+
+const RATIO_ALPHA = 0.2;
+const RATIO_MIN = 1.5;
+const RATIO_MAX = 8;
+const RATIO_DEFAULT = 4;
+
+let observedCharsPerToken = RATIO_DEFAULT;
+let ratioObservations = 0;
+
+/**
+ * Record a (chars, tokens) observation from a real Ollama response. EWMA-
+ * smoothed; bounded to [1.5, 8] to refuse pathological inputs (e.g., a
+ * prompt that's 95% whitespace would otherwise skew the ratio).
+ */
+export function recordCharsPerToken(chars: number, tokens: number): void {
+  if (chars <= 0 || tokens <= 0) return;
+  const observed = chars / tokens;
+  if (observed < RATIO_MIN || observed > RATIO_MAX) return;
+  observedCharsPerToken =
+    ratioObservations === 0
+      ? observed
+      : observedCharsPerToken * (1 - RATIO_ALPHA) + observed * RATIO_ALPHA;
+  ratioObservations++;
+}
+
+/** Current empirical chars-per-token estimate. Used by approxTokens. */
+export function getCharsPerToken(): number {
+  return observedCharsPerToken;
+}
+
+/** Test/debug only — reset the running estimate to the default. */
+export function _resetCharsPerToken(): void {
+  observedCharsPerToken = RATIO_DEFAULT;
+  ratioObservations = 0;
+}
+
 export function approxTokens(s: string | null | undefined): number {
   if (!s) return 0;
-  return Math.ceil(s.length / 4);
+  return Math.ceil(s.length / observedCharsPerToken);
 }
 
 /** Approx tokens for an arbitrary structured payload (serialized as JSON). */
@@ -42,4 +83,23 @@ export function approxTokensOf(payload: unknown): number {
 
 export function withinRoleBudget(used: number, role: Role): boolean {
   return used <= BUDGETS[role];
+}
+
+/**
+ * Maximum chars of failed-output to replay back to the model on retry. The
+ * model doesn't need its full broken output to course-correct — a short
+ * prefix is enough, and replaying the full thing risks pushing the retry
+ * prompt past the role's budget. Defaults to 500 chars (~125 tokens at the
+ * default ratio).
+ */
+export const REPLAY_TRUNCATE_CHARS = 500;
+
+/**
+ * Truncate a failed-response string for safe inclusion in a retry's
+ * assistant turn. Long outputs get a clear "[truncated]" marker so the
+ * model knows it was cut.
+ */
+export function truncateForReplay(s: string, max = REPLAY_TRUNCATE_CHARS): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '…[truncated]';
 }

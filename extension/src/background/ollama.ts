@@ -2,6 +2,7 @@
 // Streams NDJSON chunks from /api/chat. Stdlib fetch only — no deps.
 
 import { log } from '../agent/log';
+import { recordCharsPerToken } from '../agent/budget';
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -41,6 +42,16 @@ export interface ChatOptions {
   /** Ollama options bag — num_ctx, temperature, top_k, etc. */
   options?: Record<string, unknown>;
   signal?: AbortSignal;
+  /**
+   * Per-request timeout in ms. Composed with `signal` via AbortSignal.any.
+   * Default DEFAULT_CHAT_TIMEOUT_MS. Pass 0 to disable.
+   */
+  timeoutMs?: number;
+  /**
+   * Ollama `keep_alive` — how long to keep the model loaded after the request.
+   * Default '10m' so back-to-back agent calls don't pay cold-load cost.
+   */
+  keepAlive?: string;
 }
 
 export interface ChatChunk {
@@ -64,6 +75,87 @@ export interface PingResult {
   models?: string[];
 }
 
+/** Default chat timeout. Mac CPU first call is ~3 min; Linux GPU is seconds. 5 min covers both. */
+export const DEFAULT_CHAT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Default keep-alive. Keeps the model resident long enough for the next agent turn. */
+export const DEFAULT_KEEP_ALIVE = '10m';
+
+/** Default ping timeout. Should be near-instant; long delay implies wrong URL. */
+export const DEFAULT_PING_TIMEOUT_MS = 10_000;
+
+/**
+ * Compose a user-supplied AbortSignal with a manual timeout. Returns the
+ * combined signal AND a `cleanup()` callback that the caller MUST invoke in
+ * a `finally` block. The cleanup clears the internal timer and detaches the
+ * abort listener — without it, a successful fast call would leave the
+ * `setTimeout` queued for the full `timeoutMs` window. For an agent loop
+ * that does dozens of calls per task, that's dozens of zombie timers held
+ * by the SW event loop.
+ *
+ * Intentionally implemented as a manual setTimeout / clearTimeout pair
+ * instead of `AbortSignal.timeout` — the latter creates an unref'd timer
+ * that can't be cancelled when the request completes early.
+ */
+interface ComposedSignal {
+  signal: AbortSignal;
+  cleanup: () => void;
+}
+
+function composeSignal(
+  userSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): ComposedSignal {
+  const ctrl = new AbortController();
+  const cleanups: Array<() => void> = [];
+
+  // Forward user aborts.
+  if (userSignal) {
+    if (userSignal.aborted) {
+      ctrl.abort(userSignal.reason);
+    } else {
+      const onAbort = (): void => {
+        if (!ctrl.signal.aborted) ctrl.abort(userSignal.reason);
+      };
+      userSignal.addEventListener('abort', onAbort, { once: true });
+      cleanups.push(() => userSignal.removeEventListener('abort', onAbort));
+    }
+  }
+
+  // Schedule the timeout, but only if not already aborted.
+  if (timeoutMs > 0 && !ctrl.signal.aborted) {
+    const timer = setTimeout(() => {
+      if (!ctrl.signal.aborted) {
+        // Use DOMException to match the shape native AbortSignal.timeout
+        // produces, so wasTimeout() detection stays consistent.
+        const err =
+          typeof DOMException !== 'undefined'
+            ? new DOMException(`timed out after ${timeoutMs}ms`, 'TimeoutError')
+            : Object.assign(new Error(`timed out after ${timeoutMs}ms`), { name: 'TimeoutError' });
+        ctrl.abort(err);
+      }
+    }, timeoutMs);
+    cleanups.push(() => clearTimeout(timer));
+  }
+
+  return {
+    signal: ctrl.signal,
+    cleanup: () => {
+      for (const fn of cleanups) {
+        try { fn(); } catch { /* defensive */ }
+      }
+    },
+  };
+}
+
+/** True if an AbortError came from a timeout signal rather than a user abort. */
+export function wasTimeout(e: unknown): boolean {
+  const err = e as { name?: string; cause?: { name?: string } } | null;
+  if (!err) return false;
+  if (err.name === 'TimeoutError') return true;
+  return err.cause?.name === 'TimeoutError';
+}
+
 export class OllamaClient {
   constructor(public baseUrl: string) {}
 
@@ -72,49 +164,96 @@ export class OllamaClient {
     return this.baseUrl.replace(/\/$/, '') + path;
   }
 
-  /** Stream chat completions as NDJSON chunks. */
+  /**
+   * Stream chat completions as NDJSON chunks. Hardened the same way as
+   * chatOnce: timeout via composeSignal, keep_alive default, and a single
+   * retry on transient HTTP 5xx (network-error retry isn't safe here — the
+   * stream may already be partially consumed by the caller, so we can't
+   * cleanly resume).
+   */
   async *chatStream(opts: ChatOptions): AsyncGenerator<ChatChunk, void, void> {
     const body: Record<string, unknown> = {
       model: opts.model,
       messages: opts.messages,
       stream: true,
+      keep_alive: opts.keepAlive ?? DEFAULT_KEEP_ALIVE,
     };
     if (opts.tools) body.tools = opts.tools;
     if (opts.format !== undefined) body.format = opts.format;
     if (opts.think !== undefined) body.think = opts.think;
     if (opts.options) body.options = opts.options;
 
-    const res = await fetch(this.url('/api/chat'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
-    if (!res.ok || !res.body) {
-      const detail = res.body ? await res.text().catch(() => '') : '';
-      throw new Error(`Ollama chat HTTP ${res.status}: ${detail.slice(0, 200)}`);
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
+    let attempt = 0;
+    let composed: ComposedSignal | null = null;
+    try {
+      for (;;) {
+        composed = composeSignal(opts.signal, timeoutMs);
+        let res: Response;
         try {
-          yield JSON.parse(line) as ChatChunk;
-        } catch {
-          // Malformed line — skip rather than abort the stream.
+          res = await fetch(this.url('/api/chat'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: composed.signal,
+          });
+        } catch (e) {
+          composed.cleanup();
+          composed = null;
+          if (wasTimeout(e)) {
+            const tErr = new Error(`Ollama chat timed out after ${timeoutMs}ms`);
+            tErr.name = 'TimeoutError';
+            throw tErr;
+          }
+          throw e;
         }
+        if (res.status >= 500 && res.status < 600 && attempt === 0) {
+          const detail = await res.text().catch(() => '');
+          log('warn', 'ollama', `chatStream 5xx — retrying once`, {
+            status: res.status,
+            detail: detail.slice(0, 200),
+          });
+          composed.cleanup();
+          composed = null;
+          attempt++;
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        if (!res.ok || !res.body) {
+          const detail = res.body ? await res.text().catch(() => '') : '';
+          composed.cleanup();
+          composed = null;
+          throw new Error(`Ollama chat HTTP ${res.status}: ${detail.slice(0, 200)}`);
+        }
+        // Hand off to the streaming reader. Cleanup of `composed` happens in
+        // the outer finally; while the stream is being consumed, we want the
+        // signal alive so upstream aborts still propagate.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            try {
+              yield JSON.parse(line) as ChatChunk;
+            } catch {
+              // Malformed line — skip rather than abort the stream.
+            }
+          }
+        }
+        if (buf.trim()) {
+          try { yield JSON.parse(buf) as ChatChunk; } catch { /* ignore tail */ }
+        }
+        return;
       }
-    }
-    if (buf.trim()) {
-      try { yield JSON.parse(buf) as ChatChunk; } catch { /* ignore tail */ }
+    } finally {
+      composed?.cleanup();
     }
   }
 
@@ -123,12 +262,17 @@ export class OllamaClient {
    * Use this when you only care about the final message (e.g., tool-call
    * extraction or JSON-mode structured output); use chatStream for UX
    * streaming.
+   *
+   * Retries once on transient HTTP 5xx or non-timeout network errors with a
+   * brief backoff. Does NOT retry on 4xx (caller error), timeouts, or user
+   * aborts — those reflect deterministic conditions that won't change on retry.
    */
   async chatOnce(opts: ChatOptions): Promise<ChatChunk> {
     const body: Record<string, unknown> = {
       model: opts.model,
       messages: opts.messages,
       stream: false,
+      keep_alive: opts.keepAlive ?? DEFAULT_KEEP_ALIVE,
     };
     if (opts.tools) body.tools = opts.tools;
     if (opts.format !== undefined) body.format = opts.format;
@@ -136,6 +280,7 @@ export class OllamaClient {
     if (opts.options) body.options = opts.options;
 
     const promptChars = opts.messages.reduce((a, m) => a + (m.content?.length ?? 0), 0);
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
     log('info', 'ollama', 'chatOnce →', {
       model: opts.model,
       messages: opts.messages.length,
@@ -143,60 +288,152 @@ export class OllamaClient {
       think: opts.think,
       format: typeof opts.format === 'string' ? opts.format : opts.format ? 'schema' : undefined,
       tools: opts.tools?.length ?? 0,
+      timeoutMs,
     });
     const start = performance.now();
 
-    const res = await fetch(this.url('/api/chat'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '');
-      log('error', 'ollama', `chatOnce ✗ HTTP ${res.status}`, {
-        status: res.status,
-        detail: detail.slice(0, 200),
-        wallMs: Math.round(performance.now() - start),
+    const doFetch = async (): Promise<{ res: Response; cleanup: () => void }> => {
+      const composed = composeSignal(opts.signal, timeoutMs);
+      try {
+        const res = await fetch(this.url('/api/chat'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: composed.signal,
+        });
+        return { res, cleanup: composed.cleanup };
+      } catch (e) {
+        composed.cleanup();
+        if (wasTimeout(e)) {
+          const wallMs = Math.round(performance.now() - start);
+          log('error', 'ollama', `chatOnce ✗ timeout`, { timeoutMs, wallMs });
+          const tErr = new Error(`Ollama chat timed out after ${timeoutMs}ms`);
+          tErr.name = 'TimeoutError';
+          throw tErr;
+        }
+        throw e;
+      }
+    };
+
+    let res: Response;
+    let activeCleanup: (() => void) | null = null;
+    let attempt = 0;
+    try {
+      for (;;) {
+        try {
+          const fetched = await doFetch();
+          res = fetched.res;
+          activeCleanup = fetched.cleanup;
+          if (res.status >= 500 && res.status < 600 && attempt === 0) {
+            const detail = await res.text().catch(() => '');
+            log('warn', 'ollama', `chatOnce 5xx — retrying once`, {
+              status: res.status,
+              detail: detail.slice(0, 200),
+            });
+            activeCleanup();
+            activeCleanup = null;
+            attempt++;
+            await new Promise((r) => setTimeout(r, 500));
+            continue;
+          }
+          break;
+        } catch (e) {
+          const err = e as Error;
+          const isAbort = err.name === 'AbortError';
+          const isTimeout = err.name === 'TimeoutError';
+          if (!isAbort && !isTimeout && attempt === 0) {
+            log('warn', 'ollama', `chatOnce network error — retrying once`, {
+              error: err.message,
+            });
+            attempt++;
+            await new Promise((r) => setTimeout(r, 500));
+            continue;
+          }
+          throw e;
+        }
+      }
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        log('error', 'ollama', `chatOnce ✗ HTTP ${res.status}`, {
+          status: res.status,
+          detail: detail.slice(0, 200),
+          wallMs: Math.round(performance.now() - start),
+        });
+        throw new Error(`Ollama chat HTTP ${res.status}: ${detail.slice(0, 200)}`);
+      }
+      const data = (await res.json()) as ChatChunk;
+      const wallMs = Math.round(performance.now() - start);
+      log('info', 'ollama', 'chatOnce ✓', {
+        model: opts.model,
+        promptTokens: data.prompt_eval_count,
+        genTokens: data.eval_count,
+        thinkingChars: (data.message?.thinking ?? '').length,
+        contentChars: (data.message?.content ?? '').length,
+        toolCalls: data.message?.tool_calls?.length ?? 0,
+        wallMs,
+        tokPerSec: data.eval_count && wallMs > 0
+          ? Math.round((data.eval_count / (wallMs / 1000)) * 10) / 10
+          : undefined,
+        retried: attempt > 0,
       });
-      throw new Error(`Ollama chat HTTP ${res.status}: ${detail.slice(0, 200)}`);
+      // Reconcile the chars/4 heuristic against the real token count Ollama
+      // reports — improves pre-call budget estimation, especially for unicode.
+      if (data.prompt_eval_count && promptChars > 0) {
+        recordCharsPerToken(promptChars, data.prompt_eval_count);
+      }
+      return data;
+    } finally {
+      activeCleanup?.();
     }
-    const data = (await res.json()) as ChatChunk;
-    const wallMs = Math.round(performance.now() - start);
-    log('info', 'ollama', 'chatOnce ✓', {
-      model: opts.model,
-      promptTokens: data.prompt_eval_count,
-      genTokens: data.eval_count,
-      thinkingChars: (data.message?.thinking ?? '').length,
-      contentChars: (data.message?.content ?? '').length,
-      toolCalls: data.message?.tool_calls?.length ?? 0,
-      wallMs,
-      tokPerSec: data.eval_count && wallMs > 0
-        ? Math.round((data.eval_count / (wallMs / 1000)) * 10) / 10
-        : undefined,
-    });
-    return data;
   }
 
-  async embed(model: string, input: string | string[]): Promise<number[][]> {
-    const res = await fetch(this.url('/api/embed'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, input }),
-    });
-    if (!res.ok) throw new Error(`Ollama embed HTTP ${res.status}`);
-    const data = await res.json() as { embeddings?: number[][] };
-    return data.embeddings ?? [];
+  async embed(
+    model: string,
+    input: string | string[],
+    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<number[][]> {
+    const composed = composeSignal(opts.signal, opts.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS);
+    try {
+      const res = await fetch(this.url('/api/embed'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, input }),
+        signal: composed.signal,
+      });
+      if (!res.ok) throw new Error(`Ollama embed HTTP ${res.status}`);
+      const data = (await res.json()) as { embeddings?: number[][] };
+      return data.embeddings ?? [];
+    } catch (e) {
+      if (wasTimeout(e)) {
+        const t = opts.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
+        throw new Error(`Ollama embed timed out after ${t}ms`);
+      }
+      throw e;
+    } finally {
+      composed.cleanup();
+    }
   }
 
   async ping(): Promise<PingResult> {
+    const composed = composeSignal(undefined, DEFAULT_PING_TIMEOUT_MS);
     try {
-      const res = await fetch(this.url('/api/tags'), { method: 'GET' });
+      const res = await fetch(this.url('/api/tags'), { method: 'GET', signal: composed.signal });
       if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-      const data = await res.json() as { models?: { name: string }[] };
-      return { ok: true, models: (data.models ?? []).map(m => m.name) };
+      const data = (await res.json()) as { models?: { name: string }[] };
+      return { ok: true, models: (data.models ?? []).map((m) => m.name) };
     } catch (e) {
+      if (wasTimeout(e)) {
+        return { ok: false, error: `timeout after ${DEFAULT_PING_TIMEOUT_MS}ms` };
+      }
       return { ok: false, error: (e as Error).message };
+    } finally {
+      composed.cleanup();
     }
   }
 }
+
+// ----------------------------------------------------------------------------
+// Tokenizer-ratio reconciliation lives in agent/budget.ts. OllamaClient feeds
+// every observed (promptChars, prompt_eval_count) pair into it via
+// recordCharsPerToken() inside chatOnce.
+// ----------------------------------------------------------------------------

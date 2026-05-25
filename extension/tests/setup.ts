@@ -5,6 +5,16 @@
 import 'fake-indexeddb/auto';
 import { dropDB } from '../src/agent/idb';
 
+// If http_proxy is set in the env, route Node fetch through it via undici's
+// ProxyAgent. This is required for integration.test.ts to reach a local
+// Ollama from sandboxed environments where direct outbound connections
+// fail with EPERM but a proxy is provided.
+const httpProxy = process.env.http_proxy || process.env.HTTP_PROXY;
+if (httpProxy) {
+  const { ProxyAgent, setGlobalDispatcher } = await import('undici');
+  setGlobalDispatcher(new ProxyAgent(httpProxy));
+}
+
 // In-memory chrome.storage.local mock. Only the surface state_store uses.
 const memoryStore = new Map<string, unknown>();
 

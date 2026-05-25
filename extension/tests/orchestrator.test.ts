@@ -352,3 +352,286 @@ describe('orchestrator: empty-finalAnswer override (M2.5.1 contract)', () => {
     expect(final.finalAnswer).toBe('real answer');
   });
 });
+
+describe('orchestrator: step-advance clears recentActionHashes (#7)', () => {
+  it('advancing past a single-tool step does not strand a full hash window for the next step', async () => {
+    // Plan with two steps. Step s1 only legitimately needs `echo` (so its
+    // hash window fills up with echo entries). When we advance to s2, the
+    // distinct-action breaker must NOT immediately trip on s2's first turn —
+    // the window from s1 should be cleared.
+    const fake = new FakeOllamaClient({
+      planner: [
+        plannerR({
+          rootSteps: [
+            { id: 's1', title: 'echo a few times' },
+            { id: 's2', title: 'finish' },
+          ],
+        }),
+      ],
+      executor: [
+        // Fill s1's window with 9 echo calls (different args, so they're
+        // distinct hashes — no per-action repeat trip).
+        ...Array.from({ length: 9 }, (_, i) =>
+          execR({ name: 'echo', arguments: { text: `t${i}` } }),
+        ),
+        // Then next_step → s2.
+        execR({ name: 'next_step', arguments: { reason: 's1 done' } }),
+        // First action of s2.
+        execR({ name: 'finish', arguments: { summary: 'done' } }),
+      ],
+      evaluator: [evalR('done', { finalAnswer: 'done', reason: 'ok' })],
+    });
+
+    const orchestrator = new Orchestrator({
+      client: fake as unknown as OllamaClient,
+      model: 'test',
+      plannerThinking: false,
+      evaluatorThinking: false,
+      maxSteps: 25,
+    });
+
+    await orchestrator.start('test');
+    const final = await orchestrator.runUntilTerminal();
+
+    // Reach DONE without a stuck-loop replan being incorrectly emitted on
+    // s2 due to s1's history.
+    expect(final.phase).toBe('DONE');
+    // The breaker shouldn't have a 'replan' trip from a distinct-action
+    // false positive caused by s1's history.
+    const distinctTrips = final.breaker.trips.filter(
+      (t) => t.level === 'replan' && /distinct actions/i.test(t.reason),
+    );
+    expect(distinctTrips.length).toBe(0);
+  });
+});
+
+describe('orchestrator: Ollama failure mid-run transitions to ABORTED', () => {
+  it('marks the task ABORTED when a role call throws unrecoverably', async () => {
+    // Failing client: planner first call succeeds (so we reach EXECUTING),
+    // then executor calls all throw — no scripted retries that would
+    // recover. The orchestrator must (a) re-throw, (b) leave the task in
+    // phase=ABORTED in storage so a subsequent resume() doesn't pick up a
+    // dead task.
+    const failingExecutorClient = {
+      baseUrl: 'http://fake',
+      url: (p: string) => 'http://fake' + p,
+      callLog: [] as { role: string }[],
+      chatOnce: async (opts: ChatOptions): Promise<ChatChunk> => {
+        const sys = opts.messages.find((m) => m.role === 'system')?.content ?? '';
+        if (sys.startsWith('You are the PLANNER')) {
+          return {
+            message: {
+              role: 'assistant',
+              content: JSON.stringify({
+                rootSteps: [{ id: 's1', title: 'do thing' }],
+                notes: 'p',
+              }),
+            },
+            done: true,
+            prompt_eval_count: 50,
+            eval_count: 10,
+          };
+        }
+        // Executor / evaluator / compactor — all throw HTTP 503.
+        throw new Error('Ollama chat HTTP 503: upstream gone');
+      },
+      chatStream: async function* () {
+        throw new Error('not used in this test');
+      },
+      embed: async () => [[]],
+      ping: async () => ({ ok: true, models: ['fake'] }),
+    };
+
+    const orchestrator = new Orchestrator({
+      client: failingExecutorClient as unknown as OllamaClient,
+      model: 'test',
+      plannerThinking: false,
+      evaluatorThinking: false,
+      maxSteps: 5,
+    });
+
+    await orchestrator.start('failure-mid-run test');
+    // The error from the executor's chatOnce propagates — we expect it.
+    await expect(orchestrator.runUntilTerminal()).rejects.toThrow(/HTTP 503/);
+
+    // Critical: state in storage must be ABORTED. Without the orchestrator's
+    // catch-and-transition, a subsequent resume() would re-pick the task.
+    const final = await store.loadHot();
+    expect(final?.phase).toBe('ABORTED');
+  });
+});
+
+describe('orchestrator: clearHot drains the mutex (#agent.reset race)', () => {
+  it('a queued patchHot does not restore state after clearHot returns', async () => {
+    // Build a state, then race a patchHot against a clearHot. The clearHot
+    // must drain the mutex so the patch either runs BEFORE clear (harmless,
+    // we then clear) or runs after clear and fails (no hot state to patch).
+    // Either way, the FINAL state must be cleared, not patched.
+    const state = await store.startTask('drain test');
+    expect((await store.loadHot())?.taskId).toBe(state.taskId);
+
+    // Fire a patch and a clear concurrently.
+    const patchPromise = store.patchHot({ phase: 'EXECUTING' }).catch(() => null);
+    const clearPromise = store.clearHot();
+    await Promise.all([patchPromise, clearPromise]);
+
+    // After both resolve, state must be cleared. The patch either ran first
+    // (then clear wiped it) or ran after clear (failed because no hot state).
+    // Either ordering ends with cleared state.
+    expect(await store.loadHot()).toBeNull();
+  });
+});
+
+describe('orchestrator: hallucinated-tool breaker integration (#65)', () => {
+  it('routes to PLANNING after the unknown-tool window fills', async () => {
+    // The unknown-tool window is 8 turns wide; threshold 3. We script
+    // 8 unique unknown-tool calls (different names/args so the
+    // action-repeat trip doesn't fire first), then a finish after the
+    // breaker forces replan. A periodic evaluator fires at turn 5 —
+    // script it to "continue" so we keep marching.
+    const unknownExec = (i: number) =>
+      execR({ name: `made_up_tool_${i}`, arguments: { i } });
+
+    const fake = new FakeOllamaClient({
+      planner: [
+        plannerR({
+          rootSteps: [{ id: 's1', title: 'try a tool' }],
+        }),
+        plannerR({
+          rootSteps: [{ id: 's1', title: 'after replan, finish' }],
+        }),
+      ],
+      executor: [
+        unknownExec(1),
+        unknownExec(2),
+        unknownExec(3),
+        unknownExec(4),
+        unknownExec(5),
+        unknownExec(6),
+        unknownExec(7),
+        unknownExec(8), // 8th unknown — window full → breaker replan
+        // After replan, finish.
+        execR({ name: 'finish', arguments: { summary: 'recovered' } }),
+      ],
+      evaluator: [
+        // Periodic eval at turn 5 — continue so the loop reaches turn 8.
+        evalR('continue', { reason: 'still working' }),
+        // Finish-triggered eval — done.
+        evalR('done', { finalAnswer: 'recovered', reason: 'ok' }),
+      ],
+    });
+
+    const orchestrator = new Orchestrator({
+      client: fake as unknown as OllamaClient,
+      model: 'test',
+      plannerThinking: false,
+      evaluatorThinking: false,
+      maxSteps: 25,
+    });
+
+    await orchestrator.start('hallucinate then recover');
+    const final = await orchestrator.runUntilTerminal();
+
+    expect(final.phase).toBe('DONE');
+    // The breaker should have a hallucinated-tool replan trip on file.
+    const hallucTrips = final.breaker.trips.filter(
+      (t) => /unknown-tool/i.test(t.reason),
+    );
+    expect(hallucTrips.length).toBeGreaterThanOrEqual(1);
+    // Plan was actually revised once.
+    expect(final.plan.revision).toBe(2);
+  });
+});
+
+describe('orchestrator: telemetry metrics fire during a scripted run (#64)', () => {
+  it('records role-level metrics for planner / executor / evaluator', async () => {
+    const fake = new FakeOllamaClient({
+      planner: [
+        plannerR({
+          criteria: ['done'],
+          rootSteps: [{ id: 's1', title: 'echo then finish' }],
+        }),
+      ],
+      executor: [
+        execR({ name: 'echo', arguments: { text: 'hi' } }),
+        execR({ name: 'finish', arguments: { summary: 'ok' } }),
+      ],
+      evaluator: [
+        evalR('done', { finalAnswer: 'ok', reason: 'verified' }),
+      ],
+    });
+
+    const orchestrator = new Orchestrator({
+      client: fake as unknown as OllamaClient,
+      model: 'test',
+      plannerThinking: false,
+      evaluatorThinking: false,
+    });
+
+    await orchestrator.start('telemetry test');
+    const final = await orchestrator.runUntilTerminal();
+    expect(final.phase).toBe('DONE');
+
+    const { summary } = await import('../src/agent/metrics');
+    const ops = await summary(final.taskId);
+
+    // We expect at minimum: one planner_initial, one or more executor_turn,
+    // one evaluator_finish (the on-finish path; a periodic might also fire
+    // depending on EVAL_EVERY_N_STEPS).
+    const opNames = ops.map((o) => o.op);
+    expect(opNames).toContain('planner_initial');
+    expect(opNames).toContain('executor_turn');
+    expect(opNames.some((n) => n.startsWith('evaluator_'))).toBe(true);
+
+    // Each recorded op has a non-negative latency (synthetic clients
+    // resolve fast, so latency may be 0 or small — but never negative).
+    for (const op of ops) {
+      expect(op.meanLatencyMs).toBeGreaterThanOrEqual(0);
+      expect(op.count).toBeGreaterThan(0);
+      expect(op.successRate).toBeGreaterThanOrEqual(0);
+      expect(op.successRate).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe('orchestrator: closeOwnedTabs cleanup hook fires at terminal', () => {
+  it('clears persisted ownedTabs in hot state on DONE', async () => {
+    // Construct a task that ends in DONE with ownedTabs persisted in
+    // hot state (simulating the real scenario where tab.open had run
+    // earlier in the task). The orchestrator's runUntilTerminal finally
+    // block calls closeOwnedTabs(taskId). With no chrome.tabs mock
+    // registered, the actual tab-close calls would throw — but
+    // closeOwnedTabs swallows those errors and clears the persisted
+    // ownedTabs anyway. Test: ownedTabs is empty after terminal.
+    const fake = new FakeOllamaClient({
+      planner: [
+        plannerR({ rootSteps: [{ id: 's1', title: 'finish' }] }),
+      ],
+      executor: [
+        execR({ name: 'finish', arguments: { summary: 'done' } }),
+      ],
+      evaluator: [
+        evalR('done', { finalAnswer: 'done', reason: 'ok' }),
+      ],
+    });
+
+    const orchestrator = new Orchestrator({
+      client: fake as unknown as OllamaClient,
+      model: 'test',
+      plannerThinking: false,
+      evaluatorThinking: false,
+    });
+
+    await orchestrator.start('cleanup test');
+    // Pre-seed ownedTabs in hot state (as if tab.open had been called).
+    await store.patchHot({ ownedTabs: [42, 43] });
+    expect((await store.loadHot())?.ownedTabs).toEqual([42, 43]);
+
+    const final = await orchestrator.runUntilTerminal();
+    expect(final.phase).toBe('DONE');
+
+    // After terminal cleanup, ownedTabs should be cleared in hot state.
+    const post = await store.loadHot();
+    expect(post?.ownedTabs).toEqual([]);
+  });
+});

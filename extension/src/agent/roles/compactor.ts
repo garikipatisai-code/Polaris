@@ -13,7 +13,7 @@ import type { OllamaClient } from '../../background/ollama';
 import type { ScratchEntry, FindingKind } from '../../shared/agent_types';
 import { compactorSystemPrompt } from '../prompts/compactor';
 import { parseJSONPermissive } from './planner';
-import { approxTokens, BUDGETS } from '../budget';
+import { approxTokens, BUDGETS, truncateForReplay } from '../budget';
 
 export interface CompactorInput {
   goal: string;
@@ -66,9 +66,15 @@ export async function runCompactor(input: CompactorInput): Promise<CompactorOutp
     };
   }
 
+  // user-role anchor — see planner.ts comment.
+  const userAnchor = 'Produce the JSON findings list now.';
+
   let response = await client.chatOnce({
     model,
-    messages: [{ role: 'system', content: systemPrompt }],
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userAnchor },
+    ],
     format: 'json',
     think: false,
     signal,
@@ -82,17 +88,30 @@ export async function runCompactor(input: CompactorInput): Promise<CompactorOutp
   try {
     parsed = parseJSONPermissive(content);
   } catch {
+    // [system, user-anchor, assistant-failed (truncated), user-nudge] —
+    // see planner.ts. Replay truncation guards the retry against budget overrun.
     retried = true;
+    const failedContent = truncateForReplay(content);
+    const retryMessages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userAnchor },
+      { role: 'assistant' as const, content: failedContent },
+      {
+        role: 'user' as const,
+        content:
+          'Your previous output was not valid JSON. Output ONLY a single JSON object {"findings": [...]}.',
+      },
+    ];
+    const retrySize = approxTokens(retryMessages.map((m) => m.content).join('\n'));
+    if (retrySize > BUDGETS.compactor) {
+      retryMessages[2] = {
+        role: 'assistant',
+        content: '[previous output was unparseable JSON — produce the findings JSON now]',
+      };
+    }
     response = await client.chatOnce({
       model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'system',
-          content:
-            'Your previous output was not valid JSON. Output ONLY a single JSON object {"findings": [...]}.',
-        },
-      ],
+      messages: retryMessages,
       format: 'json',
       think: false,
       signal,

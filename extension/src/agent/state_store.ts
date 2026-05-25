@@ -10,14 +10,27 @@
 //   - patchHot() rejects any patch that touches `goal`
 //   - There is no `setGoal()` exported method
 //
-// Atomicity: append* methods coordinate IDB write + scratchpadRef counter
-// in chrome.storage.local. This is two writes — a SW crash between them can
-// leave the counter stale. M2.5's compactor uses a single IDB transaction
-// across stores; for M2.1 we accept the small drift window.
+// Concurrency model: WRITE serialization, not full mutual exclusion. Hot-
+// state read-modify-write paths (patchHot, appendScratch, deleteScratchSeqs,
+// appendSuccessCriteria, startTask, bumpLastTouch) are serialized through
+// the module-level `_hotMutex` promise chain so that two concurrent writers
+// can't clobber each other's writes. Reads (`loadHot`) are NOT in the mutex
+// — they execute against the latest committed state, so a read that races
+// with a write may see the pre-write or post-write value, but never a torn
+// state. chrome.storage.local's own promise-based contract gives us
+// "happens-before for the same key" so this is safe; we just don't get
+// linearizability of reads against in-flight writes. Callers that need
+// post-write consistency should sequence: `await write; await read;`.
+//
+// Caveat: this is in-process serialization only. If two SW invocations
+// (cold restarts) somehow held overlapping work, they'd race at the
+// chrome.storage layer. The watchdog + crash-resume design ensures only
+// one SW logically owns the task at a time.
 
 import { getDB } from './idb';
 import { ulid } from './ulid';
-import { approxTokens, approxTokensOf, BUDGETS } from './budget';
+import { approxTokens, approxTokensOf, BUDGETS, _resetCharsPerToken } from './budget';
+import { redactPII } from './redact';
 import type {
   AgentStateHot,
   Phase,
@@ -40,6 +53,24 @@ const TERMINAL_PHASES = new Set<Phase>(['IDLE', 'DONE', 'ABORTED']);
 const STALE_TASK_MS = 60_000;
 
 // ============================================================================
+// Hot-state mutex — serializes read-modify-write paths against chrome.storage
+// ============================================================================
+
+let _hotMutex: Promise<unknown> = Promise.resolve();
+
+/**
+ * Run `fn` with exclusive access to the hot-state read-modify-write window.
+ * Errors from `fn` propagate to the caller but do NOT break the chain — a
+ * .catch handler keeps `_hotMutex` resolvable so a thrown patch doesn't
+ * permanently deadlock subsequent ones.
+ */
+function withHotLock<T>(fn: () => Promise<T>): Promise<T> {
+  const ran = _hotMutex.then(() => fn(), () => fn());
+  _hotMutex = ran.then(() => {}, () => {});
+  return ran;
+}
+
+// ============================================================================
 // Hot state (chrome.storage.local)
 // ============================================================================
 
@@ -52,6 +83,8 @@ const STALE_TASK_MS = 60_000;
 const DEFAULT_BREAKER_STATE = {
   repeats: {} as Record<string, number>,
   recentOutcomes: [] as ('ok' | 'error')[],
+  recentActionHashes: [] as string[],
+  recentUnknownToolFlags: [] as (0 | 1)[],
   stepsWithoutProgress: 0,
   lastFindingsCount: 0,
   totalReplans: 0,
@@ -71,6 +104,7 @@ export async function loadHot(): Promise<AgentStateHot | null> {
     pendingFinishSummary: stored.pendingFinishSummary ?? null,
     replanHint: stored.replanHint ?? null,
     finalAnswer: stored.finalAnswer ?? null,
+    ownedTabs: stored.ownedTabs ?? [],
     resumedAt: stored.resumedAt ?? null,
   } as AgentStateHot;
 }
@@ -95,18 +129,22 @@ export async function patchHot(patch: Partial<Patchable>): Promise<AgentStateHot
   if ('taskId' in patch || 'schemaVersion' in patch || 'createdAt' in patch) {
     throw new Error('cannot patch immutable field in patch');
   }
-  const current = await loadHot();
-  if (!current) throw new Error('no hot state to patch');
-  const next: AgentStateHot = { ...current, ...patch, lastTouch: Date.now() };
-  await _setHot(next);
-  return next;
+  return withHotLock(async () => {
+    const current = await loadHot();
+    if (!current) throw new Error('no hot state to patch');
+    const next: AgentStateHot = { ...current, ...patch, lastTouch: Date.now() };
+    await _setHot(next);
+    return next;
+  });
 }
 
 export async function bumpLastTouch(): Promise<void> {
-  const current = await loadHot();
-  if (!current) return;
-  current.lastTouch = Date.now();
-  await _setHot(current);
+  await withHotLock(async () => {
+    const current = await loadHot();
+    if (!current) return;
+    current.lastTouch = Date.now();
+    await _setHot(current);
+  });
 }
 
 /**
@@ -117,75 +155,94 @@ export async function bumpLastTouch(): Promise<void> {
  *     task (SW died mid-flight, reload, etc.), mark it ABORTED, and proceed
  *   - otherwise throw — there's a genuinely active task we shouldn't preempt
  *
- * The full crash-resume design (continue from persisted phase) lands in M2.6.
- * For now this just unblocks the user.
+ * Crash-resume from persisted phase is implemented elsewhere (Orchestrator
+ * `resume()` + service_worker `agent.resume`); this function only handles
+ * fresh starts and zombie cleanup.
  */
 export async function startTask(goalText: string): Promise<AgentStateHot> {
   const trimmed = goalText.trim();
   if (!trimmed) throw new Error('goal text must be non-empty');
-  const current = await loadHot();
-  if (current && !TERMINAL_PHASES.has(current.phase)) {
-    const age = Date.now() - (current.lastTouch || current.createdAt);
-    if (age > STALE_TASK_MS) {
-      // Crashed — abort the zombie and proceed.
-      const aborted: AgentStateHot = {
-        ...current,
-        phase: 'ABORTED',
-        resumedAt: Date.now(),
-        lastTouch: Date.now(),
-      };
-      await _setHot(aborted);
-      console.warn(
-        `[polaris] auto-aborted stale task ${current.taskId} ` +
-        `(was ${current.phase}, no activity for ${Math.round(age / 1000)}s)`,
-      );
-    } else {
-      throw new Error(
-        `cannot start task: existing task ${current.taskId} is in phase ${current.phase} ` +
-        `(last activity ${Math.round(age / 1000)}s ago — use polaris.state.clearHot() to force)`,
-      );
+  return withHotLock(async () => {
+    const current = await loadHot();
+    if (current && !TERMINAL_PHASES.has(current.phase)) {
+      const age = Date.now() - (current.lastTouch || current.createdAt);
+      if (age > STALE_TASK_MS) {
+        // Crashed — abort the zombie and proceed.
+        const aborted: AgentStateHot = {
+          ...current,
+          phase: 'ABORTED',
+          resumedAt: Date.now(),
+          lastTouch: Date.now(),
+        };
+        await _setHot(aborted);
+        console.warn(
+          `[polaris] auto-aborted stale task ${current.taskId} ` +
+          `(was ${current.phase}, no activity for ${Math.round(age / 1000)}s)`,
+        );
+      } else {
+        throw new Error(
+          `cannot start task: existing task ${current.taskId} is in phase ${current.phase} ` +
+          `(last activity ${Math.round(age / 1000)}s ago — use polaris.state.clearHot() to force)`,
+        );
+      }
     }
-  }
-  const taskId = ulid();
-  const now = Date.now();
-  const initial: AgentStateHot = {
-    schemaVersion: SCHEMA_VERSION,
-    taskId,
-    phase: 'PLANNING',
-    goal: { text: trimmed, successCriteria: [], createdAt: now },
-    plan: { rootSteps: [], revision: 0, generatedAt: now },
-    budgets: {
-      executor:  { used: 0, max: BUDGETS.executor },
-      planner:   { used: 0, max: BUDGETS.planner },
-      evaluator: { used: 0, max: BUDGETS.evaluator },
-      totalTokens: 0,
-    },
-    visited: { hashes: [] },
-    breaker: {
-      repeats: {},
-      recentOutcomes: [],
-      stepsWithoutProgress: 0,
-      lastFindingsCount: 0,
-      totalReplans: 0,
-      trips: [],
-    },
-    scratchpadRef: { count: 0, tokens: 0 },
-    currentStepId: null,
-    turnsOnCurrentStep: 0,
-    pendingFinishSummary: null,
-    replanHint: null,
-    finalAnswer: null,
-    lastTouch: now,
-    resumedAt: null,
-    createdAt: now,
-  };
-  await _setHot(initial);
-  return initial;
+    const taskId = ulid();
+    const now = Date.now();
+    // Reset the per-process empirical chars-per-token estimator so that a
+    // prior task's domain (e.g., heavy-unicode goal trained EWMA toward 2.0)
+    // doesn't pollute the next task's pre-call budget guards.
+    _resetCharsPerToken();
+    const initial: AgentStateHot = {
+      schemaVersion: SCHEMA_VERSION,
+      taskId,
+      phase: 'PLANNING',
+      goal: { text: trimmed, successCriteria: [], createdAt: now },
+      plan: { rootSteps: [], revision: 0, generatedAt: now },
+      budgets: {
+        executor:  { used: 0, max: BUDGETS.executor },
+        planner:   { used: 0, max: BUDGETS.planner },
+        evaluator: { used: 0, max: BUDGETS.evaluator },
+        totalTokens: 0,
+      },
+      visited: { hashes: [] },
+      breaker: {
+        repeats: {},
+        recentOutcomes: [],
+        recentActionHashes: [],
+        recentUnknownToolFlags: [],
+        stepsWithoutProgress: 0,
+        lastFindingsCount: 0,
+        totalReplans: 0,
+        trips: [],
+      },
+      scratchpadRef: { count: 0, tokens: 0 },
+      currentStepId: null,
+      turnsOnCurrentStep: 0,
+      pendingFinishSummary: null,
+      replanHint: null,
+      finalAnswer: null,
+      ownedTabs: [],
+      lastTouch: now,
+      resumedAt: null,
+      createdAt: now,
+    };
+    await _setHot(initial);
+    return initial;
+  });
 }
 
-/** Force-clear hot state. Use only for debug/reset; loses goal. */
+/**
+ * Force-clear hot state. Use only for debug/reset; loses goal.
+ *
+ * Drains the hot-state write queue before clearing so that an in-flight
+ * patchHot from a stopping orchestrator can't write to the slot AFTER we
+ * erase it. Without this, `agent.reset` could race the orchestrator's own
+ * `finalizeAborted` patch and end up with state restored seconds later.
+ */
 export async function clearHot(): Promise<void> {
-  await chrome.storage.local.remove(HOT_KEY);
+  await withHotLock(async () => {
+    await chrome.storage.local.remove(HOT_KEY);
+  });
 }
 
 /**
@@ -196,28 +253,30 @@ export async function clearHot(): Promise<void> {
  * immutable in all cases.
  */
 export async function appendSuccessCriteria(criteria: string[]): Promise<AgentStateHot> {
-  const current = await loadHot();
-  if (!current) throw new Error('no hot state');
-  if (criteria.length === 0) {
-    // No-op: an empty list write should not transition state.
-    return current;
-  }
-  if (current.goal.successCriteria.length > 0) {
-    throw new Error(
-      'cannot extend successCriteria: already set during initial planning ' +
-      `(existing ${current.goal.successCriteria.length} criteria)`,
-    );
-  }
-  const updated: AgentStateHot = {
-    ...current,
-    goal: {
-      ...current.goal,
-      successCriteria: criteria.slice(0, 20),
-    },
-    lastTouch: Date.now(),
-  };
-  await _setHot(updated);
-  return updated;
+  return withHotLock(async () => {
+    const current = await loadHot();
+    if (!current) throw new Error('no hot state');
+    if (criteria.length === 0) {
+      // No-op: an empty list write should not transition state.
+      return current;
+    }
+    if (current.goal.successCriteria.length > 0) {
+      throw new Error(
+        'cannot extend successCriteria: already set during initial planning ' +
+        `(existing ${current.goal.successCriteria.length} criteria)`,
+      );
+    }
+    const updated: AgentStateHot = {
+      ...current,
+      goal: {
+        ...current.goal,
+        successCriteria: criteria.slice(0, 20),
+      },
+      lastTouch: Date.now(),
+    };
+    await _setHot(updated);
+    return updated;
+  });
 }
 
 // ============================================================================
@@ -242,13 +301,15 @@ export async function appendScratch(
   };
   await db.put('scratchpad', entry);
   // Update scratchpadRef metadata in hot state if it's the active task.
-  const hot = await loadHot();
-  if (hot && hot.taskId === taskId) {
+  // Serialized through the hot mutex so we don't clobber a concurrent patchHot.
+  await withHotLock(async () => {
+    const hot = await loadHot();
+    if (!hot || hot.taskId !== taskId) return;
     hot.scratchpadRef.count++;
     hot.scratchpadRef.tokens += entry.tokens;
     hot.lastTouch = Date.now();
     await _setHot(hot);
-  }
+  });
   return seq;
 }
 
@@ -278,22 +339,25 @@ export async function deleteScratchSeqs(taskId: string, seqs: number[]): Promise
   const db = await getDB();
   const tx = db.transaction('scratchpad', 'readwrite');
   let deletedTokens = 0;
+  let deletedCount = 0;
   for (const seq of seqs) {
     const existing = await tx.store.get([taskId, seq]);
     if (existing) {
       deletedTokens += existing.tokens;
+      deletedCount++;
       await tx.store.delete([taskId, seq]);
     }
   }
   await tx.done;
-  // Update scratchpadRef
-  const hot = await loadHot();
-  if (hot && hot.taskId === taskId) {
-    hot.scratchpadRef.count = Math.max(0, hot.scratchpadRef.count - seqs.length);
+  // Update scratchpadRef under the hot mutex.
+  await withHotLock(async () => {
+    const hot = await loadHot();
+    if (!hot || hot.taskId !== taskId) return;
+    hot.scratchpadRef.count = Math.max(0, hot.scratchpadRef.count - deletedCount);
     hot.scratchpadRef.tokens = Math.max(0, hot.scratchpadRef.tokens - deletedTokens);
     hot.lastTouch = Date.now();
     await _setHot(hot);
-  }
+  });
 }
 
 // ============================================================================
@@ -311,11 +375,18 @@ export interface AppendFindingInput {
 }
 
 export async function appendFinding(input: AppendFindingInput): Promise<Finding> {
+  // Redact PII at the persistence boundary. Findings are long-lived (they
+  // outlast the scratchpad and may be archived cross-task), so this is the
+  // last gate before sensitive substrings hit IDB. Scratchpad entries are
+  // intentionally NOT redacted — the model legitimately needs the raw text
+  // for the current turn; redaction kicks in when the Compactor archives.
   const finding: Finding = {
     id: ulid(),
     ts: Date.now(),
     embedding: null,
     ...input,
+    value: redactPII(input.value),
+    evidence: input.evidence ? redactPII(input.evidence) : input.evidence,
   };
   const db = await getDB();
   await db.put('findings', finding);
@@ -464,7 +535,25 @@ async function nextSeq(
   return cursor ? (cursor.value as { seq: number }).seq + 1 : 1;
 }
 
-async function deleteAllByTask(index: any, taskId: string): Promise<void> {
+/**
+ * Iterate every entry in an index whose key equals `taskId` and delete it.
+ * Used by resetTask to wipe per-task data across the IDB stores.
+ *
+ * Typed against the structural minimum the function uses — `openCursor`
+ * returns a cursor with `.value`, `.delete()`, and `.continue()`. This
+ * avoids the cross-store generic gymnastics that `idb`'s typed `index`
+ * argument would otherwise require (every store's index has a different
+ * key shape).
+ */
+type DeletableIndex = {
+  openCursor(range?: IDBKeyRange): Promise<DeletableCursor | null>;
+};
+type DeletableCursor = {
+  delete(): Promise<void>;
+  continue(): Promise<DeletableCursor | null>;
+};
+
+async function deleteAllByTask(index: DeletableIndex, taskId: string): Promise<void> {
   let cursor = await index.openCursor(IDBKeyRange.only(taskId));
   while (cursor) {
     await cursor.delete();
@@ -472,7 +561,7 @@ async function deleteAllByTask(index: any, taskId: string): Promise<void> {
   }
 }
 
-async function deleteAllByRange(index: any, range: IDBKeyRange): Promise<void> {
+async function deleteAllByRange(index: DeletableIndex, range: IDBKeyRange): Promise<void> {
   let cursor = await index.openCursor(range);
   while (cursor) {
     await cursor.delete();

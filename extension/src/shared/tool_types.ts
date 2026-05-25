@@ -29,4 +29,11 @@ export interface ToolResult {
   error?: string;
   /** Marks a non-recoverable error so the breaker can abort immediately. */
   fatal?: boolean;
+  /**
+   * True when the model invoked a tool name not in the registry. The
+   * orchestrator forwards this to the circuit breaker as a distinct
+   * "model is hallucinating tool names" signal — three of these in a
+   * sliding window forces replan, separately from action-repeat.
+   */
+  unknownTool?: boolean;
 }

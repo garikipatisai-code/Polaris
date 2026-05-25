@@ -43,6 +43,13 @@ export interface AgentStateHot {
   replanHint: string | null;
   /** Set by Evaluator on verdict='done' (or fallback to pendingFinishSummary). */
   finalAnswer: string | null;
+  /**
+   * Tabs the agent has opened during this task. Persisted (not just module-
+   * level state) so a SW restart doesn't leak tabs — the orchestrator's
+   * resume() path closes any zombies, and the watchdog's task abort closes
+   * the rest.
+   */
+  ownedTabs: number[];
   lastTouch: number;                // epoch ms; watchdog bumps
   resumedAt: number | null;         // set on crash-resume detection
   readonly createdAt: number;
@@ -94,6 +101,15 @@ export interface BreakerState {
   repeats: Record<string, number>;
   /** sliding window of last 5 step outcomes */
   recentOutcomes: ('ok' | 'error')[];
+  /** sliding window of last N action hashes — used by the distinct-action progress signal */
+  recentActionHashes: string[];
+  /**
+   * Sliding window flagging which of the last N turns produced an
+   * unknown-tool error. `1` means that turn invoked a tool that wasn't
+   * in the registry (model hallucinated a name); `0` means a real tool
+   * (regardless of success). Three `1`s in the window → replan.
+   */
+  recentUnknownToolFlags: (0 | 1)[];
   /** ticks where FINDINGS didn't grow */
   stepsWithoutProgress: number;
   /** Findings count seen at the previous check; used to detect growth. */
