@@ -10,3 +10,10 @@ src/manifest.d.ts
 src/manifest.js
 vite.config.d.ts
 vite.config.js
+
+# Lockfile is per-machine. The Mac dev environment runs in Apple's
+# Claude Code sandbox which proxies npm through `npm.apple.com`; a
+# Mac-generated lockfile carries those URLs and is unreachable from
+# Linux. Each machine generates its own; package.json is the
+# cross-machine source of truth.
+package-lock.json
