@@ -320,3 +320,84 @@ report a concise summary back to the user:
 - Steps that failed (verbatim assertion)
 - The KV-cache verdict
 - Recommended next action (start M4? rerun a flaky? open a bug?)
+
+---
+
+## Session results — 2026-05-25 (Linux, P2200)
+
+**Run by:** Claude (Linux session)
+**Commit:** 3d85b41 (pushed to main)
+**Full probe doc:** `extension/docs/probes/m3.5-linux.md`
+
+### What passed
+
+| Step | Result |
+|---|---|
+| 1 — npm install | Lockfile regenerated (see gap #1 below). 170 packages. |
+| 2 — Mock suite | **333/333 passed** in 13.82 s |
+| 3 — Fast-tier integration | **2/2 passed** in 36.66 s (Planner 28.3 s, Executor 7.9 s) |
+| 4 — Slow-tier E2E | **4/4 passed** in 574 s (~9.6 min). Trivial 48 s, memory 135 s, unicode 38 s, compaction 339 s. |
+| 5 — KV-cache probe | Partial hit — ratio 0.502 (see gap #2 below) |
+
+**M3.5 is empirically validated.** Goal byte-survival, multi-tool memory,
+non-ASCII goal text, and compaction all work against real qwen3.5:4b on the
+P2200. Executor tool-calling worked on first try across all observed calls
+(the M2.7.2 prompt fix is holding up).
+
+### Gaps for Mac session to address
+
+**Gap #1 — Lockfile is machine-specific.** The Mac-generated
+`package-lock.json` had 244 resolved URLs pointing to `npm.apple.com`
+(Apple's internal registry). Linux can't reach that. Workaround: deleted
+lockfile and ran `npm install --registry https://registry.npmjs.org/`.
+The committed lockfile now resolves against the public registry, but the
+Mac side will have the inverse problem on next `npm install`.
+
+**Recommended fix:** Add a project-level `.npmrc` in `extension/` with
+`registry=https://registry.npmjs.org/` so both machines use the same
+registry. Or add a note in CLAUDE.md that each machine should keep its
+own lockfile. The EBADENGINE warning for undici@8.3.0 (wants Node >=22,
+Linux is v20.20.1) is a soft warning only — no test failures from it.
+
+**Gap #2 — KV-cache reuse is real but modest.** Ratio of 0.502 (T2/T1)
+means the second identical-prefix call is ~2× faster on prompt_eval, not
+the 10×+ you'd get from a perfect cache hit. The cache IS firing — T2
+(1.37 s) is meaningfully less than T1 (2.72 s) — but M3.5 #61's claimed
+30-50% Executor latency reduction may be optimistic on Ollama 0.22.1.
+Worth testing against a newer Ollama version or checking whether
+`cache_prompt` behavior changed.
+
+**Gap #3 — Test count in CLAUDE.md is stale.** CLAUDE.md reports 301 mock
+tests; actual count is 333. Update the "Current state" section and the
+M3.5 bullet that says "Total: 301 mock tests" to 333.
+
+**Gap #4 — `OLLAMA_ORIGINS` is empty on the Linux box.** The systemd
+drop-in from the May 25 memory note may not have survived a restart, or
+was never persisted. Step 7 (browser smoke) won't work until this is
+fixed. The user said they'd set it via `systemctl edit ollama.service`
+but `echo $OLLAMA_ORIGINS` returned empty. Run:
+```bash
+sudo systemctl edit ollama.service
+# Add:
+# [Service]
+# Environment="OLLAMA_ORIGINS=chrome-extension://*"
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
+### What was NOT tested
+
+- Step 7 (real-browser smoke) — skipped. `OLLAMA_ORIGINS` not set.
+- Executor flake-reliability stats (POLARIS_REAL_OLLAMA_FLAKE_RUNS=1) —
+  skipped. Not needed for validation gate; the 4 slow-tier tests exercise
+  more Executor calls than this stat test would.
+- Telemetry sample — skipped per runbook ("Skip this step if not practical").
+
+### Recommended next actions for Mac session
+
+1. Fix Gap #1 (lockfile / .npmrc) so cross-machine installs don't break.
+2. Fix Gap #3 (stale test count in CLAUDE.md).
+3. Investigate Gap #2 (KV-cache ratio) — check Ollama 0.22.1 cache_prompt
+   docs, or re-run probe after Ollama upgrade.
+4. Tell Linux user to fix Gap #4 (OLLAMA_ORIGINS) when ready for browser smoke.
+5. M4 shopping domain work is unblocked — the agent loop is validated on
+   real hardware.
