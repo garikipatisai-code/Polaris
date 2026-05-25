@@ -104,7 +104,7 @@ The agent's pure logic and orchestrator state machine are covered by Vitest:
 
 ```bash
 cd extension
-npm test           # 301 mock-Ollama tests, ~15 s
+npm test           # 333 mock-Ollama tests, ~15 s
 npm run test:watch # watch mode
 ```
 
