@@ -82,7 +82,7 @@ in "Open questions" first.
 ## Current state — UPDATE THIS WHEN YOU FINISH WORK
 
 **Last touched:** 2026-05-25 (Mac, Claude Opus 4.7)
-**Last shipped:** M3.5 polish — autonomous iteration round + reranker rollback (333 mock tests + 2 fast-tier integration passing)
+**Last shipped:** M3.5.1 panel polish — collapsible inline events, per-op metrics block, domain tier settings UI (333 mock tests + 2 fast-tier integration passing; browser verification queued for Linux Session 2)
 **Current branch:** main
 
 ### What's done
@@ -167,6 +167,11 @@ in "Open questions" first.
     - **Total at M3.5 close: 301 mock tests + 2 fast-tier integration passing** (later polished to 333 — see the M3.5 polish entry above). Bundle: 162 KB SW (was 156 KB; +6 KB for redact + domain_tiers + metrics).
     - **Linux validation (2026-05-25, post-polish)**: 333/333 mock tests pass, 2/2 fast-tier pass, **4/4 slow-tier pass on real qwen3.5:4b** in 9.6 min total on the P2200. Goal byte-survival confirmed for ASCII + non-ASCII (★, €, ümlaut, 你好). Compaction fires with discarded > 0 and findings persist. Executor produced tool_calls on first attempt across all observed calls. KV-cache reuse probe: T2/T1 ratio 0.502 — partial reuse, ~50% prompt_eval reduction (real but more modest than the 30-50% executor latency target #61 aspired to; cache IS hitting). Full data in `extension/docs/probes/m3.5-linux.md`.
     - **Notably unfixed:** the M4-M7 roadmap doc was reframed as "scope sketch, not committed plan" with disclaimer banners; estimates dropped; 7 "open questions" stand. The plan will be rewritten as features actually ship.
+  - **M3.5.1 panel polish (NEW): three side-panel UX wins on top of M3.5:**
+    - **Polish #1 — CollapsibleText for inline events:** `breaker`, `verdict`, and `error` timeline events now use `<CollapsibleText inline cap={120}>`. Long reasons collapse with a "Show full (N chars)" toggle instead of the prior wall-of-text dump when the model produced multi-KB error/breaker reasons.
+    - **Polish #2 — per-op metrics block:** small latency table (`op | n | ok | p50 | p95 | mean`, sorted by mean desc) renders below a terminal agent run. Same data as `polaris.metrics.summary(taskId)` from the SW console — but visible without DevTools. Added `metrics.get` / `metrics.value` to the panel↔SW protocol; SW handler delegates to `metrics.summary(taskId)`.
+    - **Polish #3 — domain tier settings UI:** settings drawer gained a "Domain trust tiers" section. Lists configured hosts with per-row tier dropdown (`read-only` / `click-only` / `full-action`) + remove button; an Add row at the bottom takes a host (or pasted URL — `https://www.target.com/foo` normalizes to `target.com`) + tier dropdown. Backed by `chrome.storage.local['polaris.domain_tiers']` via new `domainTiers.list` / `domainTiers.set` messages. Lazy-fetched on drawer open.
+    - **Bundle:** panel 158 → 162 KB, SW 162 → 164 KB (+4 KB each). Tests still 333/333 — these are panel + protocol additions; no new backend logic to test in unit form. Browser verification queued for the next Linux session in `extension/docs/linux-validation.md` "Session 2 task" — Mac sandbox blocks Chrome socket binding so this is the natural place to do it.
 - `docs/research-notes.md` — literature survey
 - `ISSUES.md` — original M1 CORS issues, all resolved
 

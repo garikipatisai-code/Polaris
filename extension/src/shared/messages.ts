@@ -1,6 +1,8 @@
 // Shared protocol between the side panel UI and the background service worker.
 
 import type { AgentStateHot, AgentEventType } from './agent_types';
+import type { OpSummary } from '../agent/metrics';
+import type { DomainTier } from '../agent/domain_tiers';
 
 export interface Settings {
   ollamaBaseUrl: string;
@@ -47,7 +49,10 @@ export type RequestMessage =
   | { type: 'agent.abort' }
   | { type: 'agent.reset' }
   | { type: 'agent.resume' }
-  | { type: 'agent.getSnapshot' };
+  | { type: 'agent.getSnapshot' }
+  | { type: 'metrics.get'; taskId: string }
+  | { type: 'domainTiers.list' }
+  | { type: 'domainTiers.set'; host: string; tier: DomainTier | null };
 
 // Service worker → side panel
 export type ResponseMessage =
@@ -67,6 +72,8 @@ export type ResponseMessage =
    */
   | { type: 'agent.events'; events: AgentEventPayload[] }
   | { type: 'agent.terminal'; phase: 'DONE' | 'ABORTED'; summary?: string; error?: string }
-  | { type: 'agent.snapshot'; state: AgentStateHot | null };
+  | { type: 'agent.snapshot'; state: AgentStateHot | null }
+  | { type: 'metrics.value'; taskId: string; summary: OpSummary[] }
+  | { type: 'domainTiers.value'; tiers: Record<string, DomainTier> };
 
 export const PORT_NAME = 'polaris.sidepanel';

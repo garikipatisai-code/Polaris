@@ -13,6 +13,7 @@ import * as tools from '../agent/tools';
 import * as logModule from '../agent/log';
 import * as stressTest from '../agent/stress_test';
 import * as metrics from '../agent/metrics';
+import * as domainTiers from '../agent/domain_tiers';
 import { Orchestrator } from '../agent/orchestrator';
 
 // Expose agent primitives on globalThis.polaris so the SW DevTools console
@@ -31,6 +32,7 @@ import { Orchestrator } from '../agent/orchestrator';
   stressTest: stressTest.stressTest,
   stressReset: stressTest.stressReset,
   metrics,
+  domainTiers,
 };
 console.log(
   '[polaris] state + tools primitives → globalThis.polaris ' +
@@ -146,6 +148,27 @@ chrome.runtime.onConnect.addListener((port) => {
         case 'agent.getSnapshot': {
           const state = await stateStore.loadHot();
           send(port, { type: 'agent.snapshot', state });
+          break;
+        }
+        case 'metrics.get': {
+          // Per-op latency / success-rate summary for the task. Cheap IDB
+          // read; the panel renders it after `agent.terminal` so the user
+          // sees what each role cost without opening DevTools.
+          const summary = await metrics.summary(msg.taskId);
+          send(port, { type: 'metrics.value', taskId: msg.taskId, summary });
+          break;
+        }
+        case 'domainTiers.list': {
+          const tiers = await domainTiers.listDomainTiers();
+          send(port, { type: 'domainTiers.value', tiers });
+          break;
+        }
+        case 'domainTiers.set': {
+          // Always echo back the full map after a write so the UI's local
+          // copy stays consistent (single source of truth on the SW side).
+          await domainTiers.setDomainTier(msg.host, msg.tier);
+          const tiers = await domainTiers.listDomainTiers();
+          send(port, { type: 'domainTiers.value', tiers });
           break;
         }
       }

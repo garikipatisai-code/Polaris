@@ -9,6 +9,8 @@ import {
   Settings,
 } from '../shared/messages';
 import type { Plan, PlanStep } from '../shared/agent_types';
+import type { OpSummary } from '../agent/metrics';
+import type { DomainTier } from '../agent/domain_tiers';
 
 type ChatMsg = { role: 'user' | 'assistant'; text: string; stats?: ChatStats };
 
@@ -45,6 +47,16 @@ export default function App() {
   const [lastRoleStartAt, setLastRoleStartAt] = useState<number | null>(null);
   const [, forceTick] = useState(0);
   const [resumable, setResumable] = useState<ResumableSnapshot | null>(null);
+  // Per-op metrics summary for the most recently completed run. Fetched
+  // lazily on `agent.terminal` and discarded on the next `agent.start` /
+  // clearAgent. Stored alongside its taskId so a stale response (slow IDB
+  // tail-read) can't paint over a fresh task.
+  const [taskMetrics, setTaskMetrics] = useState<{ taskId: string; summary: OpSummary[] } | null>(null);
+  // Domain trust tiers for the settings UI. Lazy-fetched when the drawer
+  // opens; updated on every successful `domainTiers.set` echo.
+  const [domainTiers, setDomainTierMap] = useState<Record<string, DomainTier>>({});
+  const [newDomainHost, setNewDomainHost] = useState<string>('');
+  const [newDomainTier, setNewDomainTier] = useState<DomainTier>('click-only');
   // Buffer for outbound messages while the port is disconnected. Drained on
   // reconnect (the connect() function does its own initial sync). Capped to
   // avoid unbounded growth if reconnect never succeeds.
@@ -205,6 +217,12 @@ export default function App() {
             setResumable(null);
           }
           break;
+        case 'metrics.value':
+          setTaskMetrics({ taskId: msg.taskId, summary: msg.summary });
+          break;
+        case 'domainTiers.value':
+          setDomainTierMap(msg.tiers);
+          break;
       }
     };
 
@@ -253,6 +271,28 @@ export default function App() {
     const interval = setInterval(() => forceTick((t) => t + 1), 500);
     return () => clearInterval(interval);
   }, [lastRoleStartAt]);
+
+  // After the agent terminates, fetch the per-op metrics summary so the
+  // panel can render a small per-role latency table beneath the run.
+  // Skipped when taskId is still the optimistic placeholder ('...') —
+  // that means agent.started never settled and there's nothing in IDB
+  // to summarize.
+  useEffect(() => {
+    const run = agentRun;
+    if (!run || run.terminal == null) return;
+    if (!run.taskId || run.taskId === '...') return;
+    if (taskMetrics?.taskId === run.taskId) return; // already fetched
+    send(null, { type: 'metrics.get', taskId: run.taskId });
+  }, [agentRun?.terminal, agentRun?.taskId]);
+
+  // Lazy-fetch the domain-tier map when the settings drawer opens. Closed
+  // drawer means the panel doesn't need it; opening triggers a fresh read
+  // so a tier change made in another tab's panel is visible here too.
+  useEffect(() => {
+    if (drawerOpen) {
+      send(null, { type: 'domainTiers.list' });
+    }
+  }, [drawerOpen]);
 
   function sendOn(port: chrome.runtime.Port, msg: RequestMessage): boolean {
     try {
@@ -313,6 +353,7 @@ export default function App() {
       events: [],
       terminal: null,
     });
+    setTaskMetrics(null);
     setInput('');
     send(portRef.current, { type: 'agent.start', goal: goalText });
   }
@@ -324,6 +365,7 @@ export default function App() {
 
   function clearAgent() {
     setAgentRun(null);
+    setTaskMetrics(null);
   }
 
   function abortStream() {
@@ -354,12 +396,28 @@ export default function App() {
     send(portRef.current, { type: 'ollama.ping' });
   }
 
+  function addDomainTier() {
+    const host = normalizeHostInput(newDomainHost);
+    if (!host) return;
+    send(null, { type: 'domainTiers.set', host, tier: newDomainTier });
+    setNewDomainHost('');
+  }
+
+  function updateDomainTier(host: string, tier: DomainTier) {
+    send(null, { type: 'domainTiers.set', host, tier });
+  }
+
+  function removeDomainTier(host: string) {
+    send(null, { type: 'domainTiers.set', host, tier: null });
+  }
+
   function resetAgentState() {
     if (!portRef.current) return;
     if (!confirm('Wipe persistent agent state? (Clears any stuck/zombie task. Chat history in this panel is unaffected.)')) return;
     setAgentRun(null);
     setLastRoleStartAt(null);
     setResumable(null);
+    setTaskMetrics(null);
     send(portRef.current, { type: 'agent.reset' });
   }
 
@@ -374,6 +432,7 @@ export default function App() {
       terminal: null,
     });
     setResumable(null);
+    setTaskMetrics(null);
     send(portRef.current, { type: 'agent.resume' });
   }
 
@@ -483,6 +542,68 @@ export default function App() {
                   : `✗ ${connError ?? 'Connection failed'}`}
               </span>
             )}
+          </div>
+          <div className="drawer-section">
+            <div className="drawer-section-head">
+              <span className="drawer-section-label">Domain trust tiers</span>
+              <span className="drawer-section-hint">
+                Default <code>read-only</code>. Upgrade per host to let the agent click or type.
+              </span>
+            </div>
+            {Object.keys(domainTiers).length > 0 ? (
+              <ul className="domain-tier-list">
+                {Object.entries(domainTiers)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([host, tier]) => (
+                    <li key={host} className="domain-tier-row">
+                      <span className="domain-tier-host" title={host}>{host}</span>
+                      <select
+                        value={tier}
+                        onChange={(e) => updateDomainTier(host, e.target.value as DomainTier)}
+                      >
+                        <option value="read-only">read-only</option>
+                        <option value="click-only">click-only</option>
+                        <option value="full-action">full-action</option>
+                      </select>
+                      <button
+                        className="domain-tier-remove"
+                        onClick={() => removeDomainTier(host)}
+                        aria-label={`Remove ${host}`}
+                        title="Revert to default (read-only)"
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            ) : (
+              <div className="muted-hint">No custom tiers — every host is read-only.</div>
+            )}
+            <div className="domain-tier-add">
+              <input
+                type="text"
+                placeholder="e.g. amazon.com"
+                value={newDomainHost}
+                onChange={(e) => setNewDomainHost(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addDomainTier();
+                  }
+                }}
+              />
+              <select
+                value={newDomainTier}
+                onChange={(e) => setNewDomainTier(e.target.value as DomainTier)}
+              >
+                <option value="read-only">read-only</option>
+                <option value="click-only">click-only</option>
+                <option value="full-action">full-action</option>
+              </select>
+              <button onClick={addDomainTier} disabled={!newDomainHost.trim()}>
+                Add
+              </button>
+            </div>
           </div>
           <div className="drawer-actions">
             <button className="danger" onClick={resetAgentState}>
@@ -605,6 +726,12 @@ export default function App() {
                 <CollapsibleText text={agentRun.terminal.error ?? 'unknown reason'} inline />
               </div>
             )}
+            {agentRun.terminal != null &&
+              taskMetrics != null &&
+              taskMetrics.taskId === agentRun.taskId &&
+              taskMetrics.summary.length > 0 && (
+                <MetricsBlock summary={taskMetrics.summary} />
+              )}
           </div>
         )}
       </div>
@@ -705,7 +832,8 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
         <>
           <span className="breaker-icon" aria-hidden>⚠</span>
           <span className="breaker-label">Circuit breaker: {action}</span>
-          <span className="breaker-reason"> — {String(d.reason ?? 'no reason')}</span>
+          <span className="breaker-reason"> — </span>
+          <CollapsibleText text={String(d.reason ?? 'no reason')} inline cap={120} className="breaker-reason" />
         </>
       );
     }
@@ -729,9 +857,24 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
       );
     }
     case 'verdict':
-      return <><span className="tag">verdict</span> {String(d.verdict ?? '?')}{d.reason ? ` — ${String(d.reason)}` : ''}</>;
+      return (
+        <>
+          <span className="tag">verdict</span> {String(d.verdict ?? '?')}
+          {d.reason ? (
+            <>
+              {' — '}
+              <CollapsibleText text={String(d.reason)} inline cap={120} />
+            </>
+          ) : null}
+        </>
+      );
     case 'error':
-      return <><span className="tag tag-error">error</span> {truncate(String(d.error ?? '?'), 120)}</>;
+      return (
+        <>
+          <span className="tag tag-error">error</span>{' '}
+          <CollapsibleText text={String(d.error ?? '?')} inline cap={120} />
+        </>
+      );
     default:
       return <>{e.type}</>;
   }
@@ -760,22 +903,28 @@ function MessageBubble({ m }: { m: ChatMsg }): JSX.Element {
 }
 
 /**
- * Renders text up to TEXT_VISIBLE_CAP chars; if longer, shows a truncated
- * preview with a "Show full (Nk chars)" toggle. Prevents model misfires
- * from dumping tens of KB into the panel without recourse.
+ * Renders text up to a per-call cap (default TEXT_VISIBLE_CAP); if longer,
+ * shows a truncated preview with a "Show full (N chars)" toggle. Prevents
+ * model misfires from dumping tens of KB into the panel without recourse.
+ *
+ * Inline timeline events pass `cap={120}` to keep one-line rendering;
+ * the expand toggle reveals the full text on demand.
  */
 function CollapsibleText({
   text,
   className,
   inline = false,
+  cap,
 }: {
   text: string;
   className?: string;
   inline?: boolean;
+  cap?: number;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const long = text.length > TEXT_VISIBLE_CAP;
-  const shown = !long || expanded ? text : text.slice(0, TEXT_VISIBLE_CAP) + '…';
+  const limit = cap ?? TEXT_VISIBLE_CAP;
+  const long = text.length > limit;
+  const shown = !long || expanded ? text : text.slice(0, limit) + '…';
   const sizeLabel = text.length > 1024
     ? `${(text.length / 1024).toFixed(1)} KB`
     : `${text.length} chars`;
@@ -849,4 +998,65 @@ function statusIcon(s: PlanStep['status']): string {
     case 'failed': return '✗';
     case 'pending': default: return '○';
   }
+}
+
+/**
+ * Per-op latency / success-rate table rendered under a terminal run.
+ * Mirrors `polaris.metrics.summary(taskId)` from the SW console — same
+ * data, just visible without DevTools. Sorted by mean latency desc to
+ * surface the slowest role first.
+ */
+function MetricsBlock({ summary }: { summary: OpSummary[] }): JSX.Element {
+  return (
+    <div className="agent-metrics">
+      <div className="agent-metrics-head">Per-op latency</div>
+      <table className="agent-metrics-table">
+        <thead>
+          <tr>
+            <th>op</th>
+            <th>n</th>
+            <th>ok</th>
+            <th>p50</th>
+            <th>p95</th>
+            <th>mean</th>
+          </tr>
+        </thead>
+        <tbody>
+          {summary.map((s) => (
+            <tr key={s.op}>
+              <td>{s.op}</td>
+              <td>{s.count}</td>
+              <td>{Math.round(s.successRate * 100)}%</td>
+              <td>{formatMs(s.p50LatencyMs)}</td>
+              <td>{formatMs(s.p95LatencyMs)}</td>
+              <td>{formatMs(s.meanLatencyMs)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * Normalize a user-typed domain into the canonical `host` form that
+ * `domain_tiers.canonicalHost` produces. Tolerates pasted URLs, missing
+ * protocol, and `www.` prefixes. Empty string if input is unparseable.
+ */
+function normalizeHostInput(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return '';
+  try {
+    const u = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+    const host = u.host.replace(/^www\./i, '');
+    if (host) return host;
+  } catch {
+    // fall through
+  }
+  return trimmed.replace(/^www\./i, '');
 }

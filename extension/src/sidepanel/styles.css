@@ -159,6 +159,104 @@ button { font-family: inherit; }
 .conn-status.ok { color: var(--success); }
 .conn-status.fail { color: var(--error); }
 
+.drawer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.drawer-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.drawer-section-label {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+}
+.drawer-section-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.drawer-section-hint code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 10px;
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.domain-tier-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.domain-tier-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--bg);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.domain-tier-host {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.domain-tier-row select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+}
+.drawer .domain-tier-remove {
+  padding: 0 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.drawer .domain-tier-remove:hover { color: var(--error); }
+
+.domain-tier-add {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+}
+.domain-tier-add input {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+.domain-tier-add select {
+  font-size: 11px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+.drawer .domain-tier-add button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -542,6 +640,44 @@ button { font-family: inherit; }
   color: var(--error);
 }
 .agent-error-label { font-weight: 600; }
+
+/* ===== Per-op metrics block (M3.5 polish) ===== */
+.agent-metrics {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bg-soft, rgba(0,0,0,0.02));
+  font-size: 11px;
+}
+.agent-metrics-head {
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agent-metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+.agent-metrics-table th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-metrics-table th:first-child { text-align: left; }
+.agent-metrics-table td {
+  text-align: right;
+  padding: 2px 6px;
+  color: var(--text);
+}
+.agent-metrics-table td:first-child { text-align: left; color: var(--accent); }
+.agent-metrics-table tbody tr:hover { background: var(--bg); }
 
 /* ===== Resume card (M2.6 crash-resume) ===== */
 .resume-card {

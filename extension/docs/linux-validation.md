@@ -401,3 +401,217 @@ sudo systemctl daemon-reload && sudo systemctl restart ollama
 4. Tell Linux user to fix Gap #4 (OLLAMA_ORIGINS) when ready for browser smoke.
 5. M4 shopping domain work is unblocked — the agent loop is validated on
    real hardware.
+
+---
+
+## Session 2 task — Polish #1–#3 browser verification
+
+> **For the next Linux Claude session.** Mac side just shipped three side-panel
+> polish items but cannot drive real Chrome (the Mac sandbox blocks Chrome's
+> singleton socket). Your job: load the extension into Chrome on the Linux
+> box and verify each polish item works end-to-end. Same hard rules as
+> Session 1 — validation only, no code edits.
+>
+> **What changed on the Mac side since Session 1:**
+> - Polish #1: `breaker`, `verdict`, `error` timeline events now use a
+>   `<CollapsibleText inline cap={120}>` so long reasons collapse with a
+>   "Show full (N chars)" toggle instead of dumping multi-KB walls of text.
+> - Polish #2: a small per-op metrics table renders below a terminal agent
+>   run (`op | n | ok | p50 | p95 | mean`, sorted by mean latency desc).
+>   Same data as `polaris.metrics.summary(taskId)`.
+> - Polish #3: settings drawer gained a "Domain trust tiers" section —
+>   list of configured hosts with tier dropdowns, add/remove rows. Backed
+>   by `chrome.storage.local['polaris.domain_tiers']`.
+> - Bundle delta: panel 158 → 162 KB, SW 162 → 164 KB.
+
+### Pre-flight
+
+```bash
+git pull --rebase
+cd extension
+npm install                # lockfile is public-registry-resolved (Gap #1 not yet fixed at .npmrc level — your install may regenerate it)
+npm test                   # MUST be 333/333 — if not, stop and report
+npm run build              # MUST succeed; expect ~162 KB panel, ~164 KB SW
+```
+
+**Fix Gap #4 before continuing.** Without `OLLAMA_ORIGINS=chrome-extension://*`
+set on the Ollama systemd unit, every agent run will fail with HTTP 403 in
+the panel and you can't verify Polish #2. Run:
+
+```bash
+sudo systemctl edit ollama.service
+# Add:
+# [Service]
+# Environment="OLLAMA_ORIGINS=chrome-extension://*"
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+echo "$OLLAMA_ORIGINS"     # confirm in the user shell too
+curl -s -H "Origin: chrome-extension://test" http://localhost:11434/api/tags >/dev/null && echo "CORS ok"
+```
+
+### Step 1 — Load the extension
+
+```bash
+google-chrome &            # or chromium / snap path as appropriate
+# Visit chrome://extensions
+# Toggle "Developer mode" ON
+# Click "Load unpacked" → select extension/dist/
+# Note the extension ID for later
+```
+
+Open the side panel via the toolbar icon. Settings drawer (gear, top-right)
+→ confirm Ollama URL is `http://localhost:11434` and model is `qwen3.5:4b`.
+Click "Test connection" → expect `✓ Connected · N models`.
+
+### Step 2 — Drive a canonical agent task (feeds data to Polish #1 and #2)
+
+In the goal field, paste:
+```
+store the numbers 17, 25, and 8 in memory namespace 'nums' under keys a b c, read them back, finish with their sum
+```
+
+Click 🚀 Run agent. Expect 1–3 min total on the P2200 (matches the
+multi-tool slow-tier integration test from Session 1, ~135 s).
+
+While running, watch for:
+- Plan tree renders with steps
+- Several `tool` events (memory.write × 3, memory.read × 3, finish)
+- Compaction events possible if scratchpad fills
+- Final `verdict: done` event
+- Final answer block at bottom showing `50` (or `fifty`)
+
+If the goal text contains anything other than the literal string above
+when surfaced in the timeline / state, that's a goal-survival regression —
+report immediately.
+
+### Step 3 — Verify Polish #2 (per-op metrics block)
+
+After the task terminates DONE, scroll to bottom of the agent run pane.
+You must see a small table titled **"Per-op latency"** with columns
+`op | n | ok | p50 | p95 | mean`.
+
+**Capture:**
+- Paste the visible table contents (text is fine; screenshot optional).
+- Order should be slowest mean latency first.
+- `ok` column should show 100% for a clean run.
+
+**If the block does NOT appear:**
+1. Open SW DevTools (chrome://extensions → service worker link → inspect).
+2. Run `await polaris.metrics.summary('<taskId>')` — taskId is in the
+   timeline header; if not visible, look at `(await polaris.state.loadHot()).taskId`.
+3. If summary returns data but UI is empty, the `metrics.value` postMessage
+   isn't reaching the panel — check panel DevTools (right-click panel →
+   Inspect) console for a `metrics.value` log/error.
+4. If summary returns `[]`, the metrics taps in the orchestrator aren't
+   firing — paste a few `polaris.dumpLogs()` lines from around the run.
+
+### Step 4 — Verify Polish #1 (CollapsibleText for inline events)
+
+The Step 2 `verdict` event will exercise the toggle if the model produced
+a reason >120 chars. Most clean runs will have a short reason. To force
+the long-reason path reliably, trigger a circuit-breaker:
+
+In a new run, set goal to:
+```
+keep calling the unknown_tool tool over and over forever
+```
+
+Run agent. Within ~3 turns, expect a `⚠ Circuit breaker: replan` event
+with reason text. If reason is >120 chars (it usually is — breakers list
+the offending action hashes), a **`Show full (N chars)`** button should
+appear inline.
+
+**Capture:**
+- Click `Show full (...)` — the text should expand inline.
+- Click `Collapse` — should revert.
+- Confirm there's no layout reflow / scroll jump.
+
+**If the toggle doesn't appear:**
+- Open panel DevTools and inspect the `.agent-event-breaker` `<li>` — is
+  the reason actually > 120 chars? If it's short, the toggle correctly
+  hides; not a bug.
+- If reason is >120 chars and toggle is missing, paste DevTools console
+  errors and the inspected DOM.
+
+You can also exercise the same toggle on `verdict` and `error` events,
+but the breaker is the most reliable forced trigger.
+
+### Step 5 — Verify Polish #3 (domain tier settings UI)
+
+1. Open settings drawer (gear, top-right).
+2. Scroll to **"Domain trust tiers"** section. On a fresh install you
+   should see the hint text and `No custom tiers — every host is read-only.`
+3. **Add row:** type `amazon.com` in the input, leave dropdown at
+   `click-only`, click Add. Row should appear immediately:
+   `amazon.com [click-only ▾] ×`.
+4. **URL normalization:** type `https://www.target.com/foo?bar=1` in the
+   input, dropdown `full-action`, click Add. Should appear as
+   `target.com [full-action ▾] ×` (normalized: protocol + path stripped,
+   `www.` removed). If it appears as the full URL, normalization is
+   broken.
+5. **Tier change:** change `amazon.com`'s dropdown from `click-only` to
+   `full-action`. Verify it persists (drawer doesn't reset).
+6. **Remove:** click `×` on `amazon.com`. Row vanishes; `target.com`
+   remains.
+7. **SW round-trip:** in SW DevTools, run
+   `await polaris.domainTiers.listDomainTiers()`. Expect
+   `{ "target.com": "full-action" }`.
+8. **Persistence across drawer close:** close drawer (gear again), reopen.
+   Tier list should re-fetch and show `target.com: full-action`.
+9. **Persistence across SW restart:** in chrome://extensions, click the
+   reload icon for Polaris (kills the SW). Reopen panel + drawer. Tier
+   list should STILL show `target.com: full-action` (chrome.storage.local
+   survives SW death).
+10. **assertCanAct gate:** in SW DevTools, run
+    `await polaris.domainTiers.assertCanAct('https://target.com/x', 'full-action')`
+    — should resolve without throwing. Then run
+    `await polaris.domainTiers.assertCanAct('https://amazon.com/x', 'click-only')`
+    — should throw a `BrowserToolError` saying amazon.com is read-only.
+
+### Step 6 — Capture results
+
+Append a "Session 2 results — <date>" subsection below this one with:
+- Step 1 (load + test connection): PASS/FAIL
+- Step 2 (canonical task): PASS/FAIL + final answer text + wall time
+- Step 3 (metrics block): PASS/FAIL + paste the table contents
+- Step 4 (CollapsibleText): PASS/FAIL for breaker reason expand+collapse
+- Step 5 (domain tiers): PASS/FAIL per substep (1–10)
+- Any console errors observed (SW or panel DevTools), verbatim
+- Bundle size as built (`ls -la dist/assets/`)
+
+```bash
+git add extension/docs/linux-validation.md
+git commit -m "docs: Linux session 2 — polish #1-3 browser verification"
+git push
+```
+
+### What to do if X fails
+
+- **Step 2 task fails fast with HTTP 403** → Gap #4 not fixed. Set
+  `OLLAMA_ORIGINS`, restart Ollama, retry.
+- **Step 2 stalls in EXECUTING** → check SW DevTools console for the
+  Ollama call; could be model unloaded, slow first call, or a real
+  regression. The watchdog will mark it ABORTED at 5 min if truly stuck.
+- **Step 3 metrics block missing on a clean run** → this is the polish
+  feature most likely to have a wiring bug. Capture in detail per the
+  triage in Step 3.
+- **Step 4 toggle missing** → confirm reason is >120 chars first; the
+  toggle is correctly hidden for short text.
+- **Step 5 normalization wrong** → likely `normalizeHostInput` regression.
+  Test from panel DevTools console:
+  ```js
+  // Won't expose normalizeHostInput directly (it's local); but you can
+  // verify by typing inputs in the UI and observing what gets stored.
+  ```
+- **Step 5 persistence broken across SW restart** → chrome.storage.local
+  is the source of truth; if it's empty after restart but the in-memory
+  state showed entries, the `setDomainTier` write isn't completing
+  before the SW dies. Capture timing.
+
+### Hard rules (same as Session 1)
+
+- **Do not write code.** Validation only.
+- **Do not work around UI bugs** ("if X is missing, ignore and continue").
+  Capture and report.
+- **Do not test additional features beyond #1–#3.** Scope creep on a
+  validation session masks signal.
+- Commit + push the results subsection before signing off.
