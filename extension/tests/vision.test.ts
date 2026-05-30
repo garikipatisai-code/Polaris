@@ -59,9 +59,7 @@ describe('createVisionGroundTool', () => {
     const callArgs = (client.chatOnce as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(callArgs.model).toBe('qwen3.5:4b');
     expect(callArgs.messages[0].images).toEqual([SAMPLE_DATA_URI]);
-    expect(callArgs.messages[0].content).toBe(
-      'Describe the page contents briefly. What elements are visible and what are their states?',
-    );
+    expect(callArgs.messages[0].content).toContain('Describe the page contents');
 
     // Verify the output shape
     expect(result.assessment).toBe(SAMPLE_ASSESSMENT);

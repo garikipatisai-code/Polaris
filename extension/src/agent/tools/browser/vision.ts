@@ -78,9 +78,9 @@ export function createVisionGroundTool(
   return {
     name: 'vision.ground',
     description:
-      'Send a screenshot to the local vision model and return a verification assessment. ' +
-      'Use this to verify that extracted ARIA data matches the actual visible page state. ' +
-      'Always provide widthPx when available; images < 1200 px wide will be rejected.',
+      'Verify page content using the vision model. IMPORTANT: after taking a screenshot with ' +
+      'tab.screenshot, call this with tabId (NOT the dataUri string — it is too long to repeat). ' +
+      'Example: vision.ground({tabId: 42}). Images < 1200 px wide will be rejected.',
     argsSchema: visionGroundArgs,
     outputSchema: visionGroundOutput,
     parametersJSON: {
@@ -88,15 +88,15 @@ export function createVisionGroundTool(
       properties: {
         dataUri: {
           type: 'string',
-          description: 'Data URI of a PNG screenshot from tab.screenshot.',
+          description: 'DEPRECATED — do not use. Use tabId instead.',
         },
         question: {
           type: 'string',
-          description: 'Optional verification question. Defaults to general description.',
+          description: 'Optional verification question. Defaults to "Is the search bar visible?".',
         },
         tabId: {
           type: 'integer',
-          description: 'Tab id to look up the last screenshot. Alternative to dataUri.',
+          description: 'Tab id from tab.screenshot. PREFERRED — the screenshot is cached internally, no need to repeat the data URI.',
         },
         widthPx: {
           type: 'integer',
@@ -125,7 +125,7 @@ export function createVisionGroundTool(
 
       const question =
         args.question ??
-        'Describe the page contents briefly. What elements are visible and what are their states?';
+        'Describe the page contents in 1-2 sentences. What elements are visible?';
 
       const result = await client.chatOnce({
         model,
