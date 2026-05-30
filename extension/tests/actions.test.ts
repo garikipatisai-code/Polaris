@@ -6,7 +6,7 @@
 // mockSendCommand to test failure modes.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tabClickTool } from '../src/agent/tools/browser/actions';
+import { tabClickTool, tabTypeTool, tabSelectTool } from '../src/agent/tools/browser/actions';
 import { setDomainTier } from '../src/agent/domain_tiers';
 import { resetMockedStorage } from './setup';
 
@@ -187,5 +187,89 @@ describe('tab.click', () => {
     );
     expect(result.x).toBe(5); // floor(11/2) = 5
     expect(result.y).toBe(3); // floor(7/2) = 3
+  });
+});
+
+describe('tab.type', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await setDomainTier('example.com', 'full-action');
+    mockTabsGet.mockResolvedValue({ id: 42, url: 'https://example.com/page' });
+    mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      if (method === 'DOM.querySelector') return { nodeId: 101 };
+      if (method === 'Input.dispatchKeyEvent') return {};
+      return {};
+    });
+  });
+
+  it('types text into selected element', async () => {
+    const result = await tabTypeTool.execute(
+      { tabId: 42, selector: '#search', text: 'hello' },
+      { taskId: 't1', stepId: null },
+    );
+    expect(result.action).toBe('type');
+    expect(result.charsTyped).toBe(5);
+    expect(result.submitted).toBe(false);
+  });
+
+  it('presses Enter when submit=true', async () => {
+    const result = await tabTypeTool.execute(
+      { tabId: 42, selector: '#search', text: 'query', submit: true },
+      { taskId: 't1', stepId: null },
+    );
+    expect(result.submitted).toBe(true);
+    const enterCalls = mockSendCommand.mock.calls.filter(
+      (c: unknown[]) => (c[1] as string) === 'Input.dispatchKeyEvent' && (c[2] as Record<string, unknown>)?.key === 'Enter',
+    );
+    expect(enterCalls.length).toBe(2);
+  });
+
+  it('throws for empty selector match', async () => {
+    mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === 'DOM.querySelector') return { nodeId: 0 };
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      return {};
+    });
+    await expect(tabTypeTool.execute(
+      { tabId: 42, selector: '#nonexistent', text: 'x' },
+      { taskId: 't1', stepId: null },
+    )).rejects.toThrow('matched no elements');
+  });
+
+  it('has correct name', () => {
+    expect(tabTypeTool.name).toBe('tab.type');
+  });
+});
+
+describe('tab.select', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTabsGet.mockResolvedValue({ id: 42, url: 'https://example.com/page' });
+    mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === 'Runtime.evaluate') return { result: { value: { ok: true } } };
+      return {};
+    });
+  });
+
+  it('selects a value in a dropdown', async () => {
+    const result = await tabSelectTool.execute(
+      { tabId: 42, selector: '#sort', value: 'price-asc' },
+      { taskId: 't1', stepId: null },
+    );
+    expect(result.action).toBe('select');
+    expect(result.value).toBe('price-asc');
+  });
+
+  it('throws when element not found', async () => {
+    mockSendCommand.mockResolvedValue({ result: { value: { ok: false, error: 'element not found' } } });
+    await expect(tabSelectTool.execute(
+      { tabId: 42, selector: '#missing', value: 'x' },
+      { taskId: 't1', stepId: null },
+    )).rejects.toThrow('element not found');
+  });
+
+  it('has correct name', () => {
+    expect(tabSelectTool.name).toBe('tab.select');
   });
 });

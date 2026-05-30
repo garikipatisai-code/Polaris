@@ -157,6 +157,169 @@ export const tabClickTool: ToolHandler<
   },
 };
 
+// ──────────────────────────────────────────────────────────────────────────
+// tab.type
+// ──────────────────────────────────────────────────────────────────────────
+
+const tabTypeArgs = z.object({
+  tabId: z.number().int(),
+  selector: z.string().min(1),
+  text: z.string(),
+  submit: z.boolean().optional(),
+});
+
+const tabTypeOutput = z.object({
+  action: z.literal('type'),
+  charsTyped: z.number().int(),
+  submitted: z.boolean(),
+});
+
+export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeof tabTypeOutput>> = {
+  name: 'tab.type',
+  description: 'Type text into an input element identified by CSS selector. Clears existing content first. Gated by domain tier: must be "full-action".',
+  argsSchema: tabTypeArgs,
+  outputSchema: tabTypeOutput,
+  parametersJSON: {
+    type: 'object',
+    properties: {
+      tabId: { type: 'integer', description: 'Tab id.' },
+      selector: { type: 'string', description: 'CSS selector for the input element.' },
+      text: { type: 'string', description: 'Text to type.' },
+      submit: { type: 'boolean', description: 'Press Enter after typing. Default false.' },
+    },
+    required: ['tabId', 'selector', 'text'],
+  },
+  execute: async (args) => {
+    return withBrowserTimeout(async () => {
+      let tab: chrome.tabs.Tab;
+      try {
+        tab = await chrome.tabs.get(args.tabId);
+      } catch (e) {
+        throw new BrowserToolError(`tab.type: tab ${args.tabId} not found: ${(e as Error).message}`, { fatal: false });
+      }
+      await assertCanAct(tab.url ?? '', 'full-action');
+
+      const target: { tabId: number } = { tabId: args.tabId };
+      try {
+        await chrome.debugger.attach(target, '1.3');
+
+        const docResult = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 });
+        const documentNodeId = (docResult as { root?: { nodeId: number } })?.root?.nodeId;
+        if (typeof documentNodeId !== 'number') {
+          throw new BrowserToolError('tab.type: could not get document', { fatal: true });
+        }
+        const queryResult = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
+          nodeId: documentNodeId,
+          selector: args.selector,
+        });
+        const elNodeId = (queryResult as { nodeId: number }).nodeId;
+        if (!elNodeId) {
+          throw new BrowserToolError(`tab.type: selector "${args.selector}" matched no elements`, { fatal: false });
+        }
+
+        // Clear existing via Backspace
+        await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+          type: 'keyDown', windowsVirtualKeyCode: 8, key: 'Backward', text: '\b',
+        });
+        await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+          type: 'keyUp', windowsVirtualKeyCode: 8, key: 'Backward',
+        });
+
+        // Type each character
+        for (const char of args.text) {
+          await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+            type: 'char', text: char, key: char, windowsVirtualKeyCode: char.charCodeAt(0),
+          });
+        }
+
+        if (args.submit) {
+          await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+            type: 'keyDown', windowsVirtualKeyCode: 13, key: 'Enter',
+          });
+          await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+            type: 'keyUp', windowsVirtualKeyCode: 13, key: 'Enter',
+          });
+        }
+
+        return { action: 'type', charsTyped: args.text.length, submitted: args.submit ?? false };
+      } finally {
+        try { await chrome.debugger.detach(target); } catch { /* best-effort */ }
+      }
+    }, 15_000, 'tab.type');
+  },
+};
+
+// ──────────────────────────────────────────────────────────────────────────
+// tab.select
+// ──────────────────────────────────────────────────────────────────────────
+
+const tabSelectArgs = z.object({
+  tabId: z.number().int(),
+  selector: z.string().min(1),
+  value: z.string().min(1),
+});
+
+const tabSelectOutput = z.object({
+  action: z.literal('select'),
+  selector: z.string(),
+  value: z.string(),
+});
+
+export const tabSelectTool: ToolHandler<z.infer<typeof tabSelectArgs>, z.infer<typeof tabSelectOutput>> = {
+  name: 'tab.select',
+  description: 'Select an option in a <select> dropdown. Gated by domain tier: "click-only".',
+  argsSchema: tabSelectArgs,
+  outputSchema: tabSelectOutput,
+  parametersJSON: {
+    type: 'object',
+    properties: {
+      tabId: { type: 'integer', description: 'Tab id.' },
+      selector: { type: 'string', description: 'CSS selector for the <select> element.' },
+      value: { type: 'string', description: 'Value of the <option> to select.' },
+    },
+    required: ['tabId', 'selector', 'value'],
+  },
+  execute: async (args) => {
+    return withBrowserTimeout(async () => {
+      let tab: chrome.tabs.Tab;
+      try {
+        tab = await chrome.tabs.get(args.tabId);
+      } catch (e) {
+        throw new BrowserToolError(`tab.select: tab ${args.tabId} not found`, { fatal: false });
+      }
+      await assertCanAct(tab.url ?? '', 'click-only');
+
+      const target: { tabId: number } = { tabId: args.tabId };
+      try {
+        await chrome.debugger.attach(target, '1.3');
+
+        const expr = `(() => {
+          const el = document.querySelector(${JSON.stringify(args.selector)});
+          if (!el) return { ok: false, error: 'element not found' };
+          if (el.tagName !== 'SELECT') return { ok: false, error: 'element is not a <select>' };
+          (el as HTMLSelectElement).value = ${JSON.stringify(args.value)};
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true, selectedValue: ${JSON.stringify(args.value)} };
+        })()`;
+
+        const result = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+          expression: expr,
+          returnByValue: true,
+        });
+
+        const outcome = (result as { result?: { value?: { ok: boolean; error?: string } } })?.result?.value;
+        if (!outcome?.ok) {
+          throw new BrowserToolError(`tab.select: ${outcome?.error ?? 'evaluation failed'}`, { fatal: false });
+        }
+
+        return { action: 'select', selector: args.selector, value: args.value };
+      } finally {
+        try { await chrome.debugger.detach(target); } catch { /* best-effort */ }
+      }
+    }, 10_000, 'tab.select');
+  },
+};
+
 // ──────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────
