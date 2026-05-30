@@ -217,12 +217,19 @@ export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeo
           throw new BrowserToolError(`tab.type: selector "${args.selector}" matched no elements`, { fatal: false });
         }
 
-        // Clear existing via Backspace
-        await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-          type: 'keyDown', windowsVirtualKeyCode: 8, key: 'Backward', text: '\b',
-        });
-        await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-          type: 'keyUp', windowsVirtualKeyCode: 8, key: 'Backward',
+        // Clear existing content via Runtime.evaluate (handles both empty
+        // and pre-filled inputs), then focus the element.
+        await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+          expression: `(() => {
+            const el = document.querySelector(${JSON.stringify(args.selector)});
+            if (!el) return;
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              el.value = '';
+            } else if (el.isContentEditable) {
+              el.textContent = '';
+            }
+            el.focus();
+          })()`,
         });
 
         // Type each character
