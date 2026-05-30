@@ -27,13 +27,33 @@ const VISION_TIMEOUT_MS = 120_000;
 /** Regex for validating PNG base64 data URIs. */
 const DATA_URI_PNG_RE = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
 
+/**
+ * Cross-tool screenshot cache. `tab.screenshot` writes the last data URI per
+ * tabId here; `vision.ground` can read by tabId instead of requiring the model
+ * to reproduce the full data URI (which is too large for small models to handle
+ * reliably in tool call arguments).
+ */
+const screenshotCache = new Map<number, string>();
+
+/** Store a data URI for a tabId (called by tab.screenshot). */
+export function cacheScreenshot(tabId: number, dataUri: string): void {
+  screenshotCache.set(tabId, dataUri);
+  // Cap cache size at 5 entries to avoid unbounded memory growth
+  if (screenshotCache.size > 5) {
+    const first = screenshotCache.keys().next().value;
+    if (first !== undefined) screenshotCache.delete(first);
+  }
+}
+
 export const visionGroundArgs = z.object({
-  dataUri: z
-    .string()
-    .regex(DATA_URI_PNG_RE, 'dataUri must be a base64-encoded PNG data URI'),
+  dataUri: z.string().regex(DATA_URI_PNG_RE, 'dataUri must be a base64-encoded PNG data URI').optional(),
+  tabId: z.number().int().optional(),
   question: z.string().min(1).optional(),
   widthPx: z.number().int().positive().optional(),
-});
+}).refine(
+  (d) => d.dataUri !== undefined || d.tabId !== undefined,
+  { message: 'must provide either dataUri (direct) or tabId (lookup from last screenshot)' },
+);
 
 const visionGroundOutput = z.object({
   assessment: z.string(),
@@ -74,14 +94,26 @@ export function createVisionGroundTool(
           type: 'string',
           description: 'Optional verification question. Defaults to general description.',
         },
+        tabId: {
+          type: 'integer',
+          description: 'Tab id to look up the last screenshot. Alternative to dataUri.',
+        },
         widthPx: {
           type: 'integer',
           description: 'Width of the source screenshot in pixels.',
         },
       },
-      required: ['dataUri'],
     },
     execute: async (args) => {
+      // Resolve data URI: either from direct arg or from tabId cache
+      const dataUri = args.dataUri ?? (args.tabId !== undefined ? screenshotCache.get(args.tabId) : undefined);
+      if (!dataUri || !DATA_URI_PNG_RE.test(dataUri)) {
+        throw new BrowserToolError(
+          `vision.ground: no valid screenshot available${args.tabId !== undefined ? ` for tab ${args.tabId} — call tab.screenshot first` : ''}`,
+          { fatal: false },
+        );
+      }
+
       // Reject images below the minimum width — the model hallucinates
       // instead of refusing on small images.
       if (args.widthPx !== undefined && args.widthPx < MIN_VISION_WIDTH_PX) {
@@ -97,7 +129,7 @@ export function createVisionGroundTool(
 
       const result = await client.chatOnce({
         model,
-        messages: [{ role: 'user', content: question, images: [args.dataUri] }],
+        messages: [{ role: 'user', content: question, images: [dataUri!] }],
         timeoutMs: VISION_TIMEOUT_MS,
         think: false,
       });

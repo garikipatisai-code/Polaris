@@ -25,6 +25,7 @@ import { z } from 'zod';
 import type { ToolHandler } from '../registry';
 import { BrowserToolError, withBrowserTimeout } from './lifecycle';
 import * as store from '../../state_store';
+import { cacheScreenshot } from './vision';
 
 // ──────────────────────────────────────────────────────────────────────
 // Ownership tracking — both in-memory (fast lookup) and persisted to hot
@@ -556,6 +557,9 @@ export const tabScreenshotTool: ToolHandler<
             { fatal: false },
           );
         }
+
+        // Cache for vision.ground lookups by tabId
+        cacheScreenshot(args.tabId, dataUri);
 
         const dims = parsePngDimensions(dataUri);
         const widthPx = dims?.widthPx ?? 0;

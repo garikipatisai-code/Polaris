@@ -6,7 +6,7 @@
 // HTTP endpoint.
 
 import { describe, it, expect, vi } from 'vitest';
-import { createVisionGroundTool, visionGroundArgs } from '../src/agent/tools/browser/vision';
+import { createVisionGroundTool, visionGroundArgs, cacheScreenshot } from '../src/agent/tools/browser/vision';
 import type { OllamaClient } from '../src/background/ollama';
 import { BrowserToolError } from '../src/agent/tools/browser/lifecycle';
 
@@ -139,5 +139,32 @@ describe('createVisionGroundTool', () => {
 
     expect(result.assessment).toBe('ok');
     expect(result.confirmed).toBe(false);
+  });
+
+  it('resolves screenshot from tabId cache', async () => {
+    const client = mockClient(SAMPLE_ASSESSMENT);
+    const tool = createVisionGroundTool(client, 'qwen3.5:4b');
+
+    // Pre-cache a screenshot
+    cacheScreenshot(42, SAMPLE_DATA_URI);
+
+    const result = await tool.execute(
+      { tabId: 42 },
+      { taskId: 't1', stepId: 's1' },
+    );
+
+    expect(client.chatOnce).toHaveBeenCalledTimes(1);
+    const callArgs = (client.chatOnce as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(callArgs.messages[0].images![0]).toBe(SAMPLE_DATA_URI);
+    expect(result.confirmed).toBe(true);
+  });
+
+  it('throws when tabId has no cached screenshot', async () => {
+    const client = mockClient(SAMPLE_ASSESSMENT);
+    const tool = createVisionGroundTool(client, 'qwen3.5:4b');
+
+    await expect(
+      tool.execute({ tabId: 99 }, { taskId: 't1', stepId: 's1' }),
+    ).rejects.toThrow(/call tab.screenshot first/);
   });
 });
