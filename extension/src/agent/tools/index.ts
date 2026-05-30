@@ -62,6 +62,7 @@ export {
 } from './browser/tab';
 export { findAdapter, extractProduct } from './retailers';
 export { productExtractTool } from './retailers/extract_tool';
+export { createVisionGroundTool } from './browser/vision';
 export { BrowserToolError, withBrowserTimeout } from './browser/lifecycle';
 
 /** Names of tools the orchestrator special-cases (phase transitions, plan advancement, etc.). */
