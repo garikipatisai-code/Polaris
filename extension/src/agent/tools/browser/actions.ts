@@ -50,8 +50,8 @@ const tabClickArgs = z
 
 const tabClickOutput = z.object({
   action: z.literal('click'),
-  x: z.number(),
-  y: z.number(),
+  x: z.number().int(),
+  y: z.number().int(),
 });
 
 export const tabClickTool: ToolHandler<
@@ -206,7 +206,7 @@ async function resolveElementCoords(
     nodeId = domResult.nodeId;
   } else if (selector) {
     // Path 2: fallback to CSS selector
-    const docResult = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: -1 });
+    const docResult = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 });
     const documentNodeId = (docResult as { root?: { nodeId: number } })?.root?.nodeId;
     if (typeof documentNodeId !== 'number') {
       throw new BrowserToolError('tab.click: could not get document', { fatal: true });
