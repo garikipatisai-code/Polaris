@@ -21,8 +21,16 @@ import type { OllamaClient } from '../../../background/ollama';
 /** Minimum screenshot width required for reliable vision model output. */
 const MIN_VISION_WIDTH_PX = 1200;
 
-const visionGroundArgs = z.object({
-  dataUri: z.string().min(20, 'dataUri too short — not a valid screenshot'),
+/** Vision inference timeout — image tokens are large and need generous room. */
+const VISION_TIMEOUT_MS = 120_000;
+
+/** Regex for validating PNG base64 data URIs. */
+const DATA_URI_PNG_RE = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
+
+export const visionGroundArgs = z.object({
+  dataUri: z
+    .string()
+    .regex(DATA_URI_PNG_RE, 'dataUri must be a base64-encoded PNG data URI'),
   question: z.string().min(1).optional(),
   widthPx: z.number().int().positive().optional(),
 });
@@ -90,7 +98,7 @@ export function createVisionGroundTool(
       const result = await client.chatOnce({
         model,
         messages: [{ role: 'user', content: question, images: [args.dataUri] }],
-        timeoutMs: 120_000,
+        timeoutMs: VISION_TIMEOUT_MS,
         think: false,
       });
 

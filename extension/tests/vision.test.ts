@@ -6,13 +6,16 @@
 // HTTP endpoint.
 
 import { describe, it, expect, vi } from 'vitest';
-import { createVisionGroundTool } from '../src/agent/tools/browser/vision';
+import { createVisionGroundTool, visionGroundArgs } from '../src/agent/tools/browser/vision';
 import type { OllamaClient } from '../src/background/ollama';
 import { BrowserToolError } from '../src/agent/tools/browser/lifecycle';
 
 /** A 1x1 red PNG as a data URI — valid format but tiny. */
 const SAMPLE_DATA_URI =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+/** A non-PNG string that should fail the dataUri regex. */
+const INVALID_DATA_URI = 'not-a-png-at-all';
 
 /** A realistic-length assessment string the model might return. */
 const SAMPLE_ASSESSMENT =
@@ -74,18 +77,39 @@ describe('createVisionGroundTool', () => {
         { dataUri: SAMPLE_DATA_URI, widthPx: 800 },
         { taskId: 't1', stepId: 's1' },
       ),
-    ).rejects.toThrow(BrowserToolError);
-
-    // Also verify the error message mentions the width
-    await expect(
-      tool.execute(
-        { dataUri: SAMPLE_DATA_URI, widthPx: 800 },
-        { taskId: 't1', stepId: 's1' },
-      ),
     ).rejects.toThrow(/image width 800px < minimum 1200px/);
 
     // chatOnce should never have been called
     expect(client.chatOnce).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid data URIs via schema validation', () => {
+    // Schema validation happens at registry dispatch time (not inside execute),
+    // so we test the schema directly.
+    const result = visionGroundArgs.safeParse({ dataUri: INVALID_DATA_URI });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const msg = result.error.issues.map((i) => i.message).join('; ');
+      expect(msg).toMatch(/PNG data URI/i);
+    }
+  });
+
+  it('handles degenerate Ollama response (message.content undefined)', async () => {
+    const client = mockClient('');
+    // Simulate undefined message content
+    client.chatOnce = vi.fn().mockResolvedValue({
+      message: { content: undefined, role: 'assistant' },
+      done: true,
+    });
+    const tool = createVisionGroundTool(client, 'qwen3.5:4b');
+
+    const result = await tool.execute(
+      { dataUri: SAMPLE_DATA_URI, widthPx: 1400 },
+      { taskId: 't1', stepId: 's1' },
+    );
+
+    expect(result.assessment).toBe('');
+    expect(result.confirmed).toBe(false);
   });
 
   it('passes custom question to Ollama', async () => {
