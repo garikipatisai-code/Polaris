@@ -34,4 +34,13 @@ export default defineManifest({
   content_security_policy: {
     extension_pages: "script-src 'self'; object-src 'self'; base-uri 'self'",
   },
+  // Set-of-Marks overlay — injected into every page so the agent can
+  // request numbered bounding boxes over interactive elements.
+  content_scripts: [
+    {
+      matches: ['<all_urls>'],
+      js: ['src/content/som.ts'],
+      run_at: 'document_idle',
+    },
+  ],
 });
