@@ -357,7 +357,7 @@ async function resolveElementCoords(
     // Path 1: resolve from backendDOMNodeId (from ARIA tree)
     const resolveResult = await chrome.debugger.sendCommand(target, 'DOM.resolveNode', {
       backendNodeId: backendDOMNodeId,
-    });
+    }) as { object?: { objectId?: string } } | undefined;
     if (!resolveResult?.object?.objectId) {
       throw new BrowserToolError(
         `tab.click: could not resolve backendDOMNodeId ${backendDOMNodeId}`,
@@ -366,7 +366,7 @@ async function resolveElementCoords(
     }
     const domResult = await chrome.debugger.sendCommand(target, 'DOM.requestNode', {
       objectId: resolveResult.object.objectId,
-    });
+    }) as { nodeId?: number } | undefined;
     if (typeof domResult?.nodeId !== 'number') {
       throw new BrowserToolError(
         `tab.click: could not request node for backendDOMNodeId ${backendDOMNodeId}`,
