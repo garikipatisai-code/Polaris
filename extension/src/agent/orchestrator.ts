@@ -19,6 +19,7 @@
 //   - closeOwnedTabs cleanup at terminal phase
 
 import type { OllamaClient } from '../background/ollama';
+import type { CloudClient } from '../background/cloud_client';
 import { ToolRegistry, createDefaultRegistry, createVisionGroundTool } from './tools';
 import { closeOwnedTabs } from './tools';
 import { runExecutor } from './roles/executor';
@@ -56,9 +57,24 @@ export interface OrchestratorEvent {
   data?: unknown;
 }
 
-export interface OrchestratorOptions {
-  client: OllamaClient;
+export type AnyClient = OllamaClient | CloudClient;
+
+export interface ProviderConfig {
+  client: AnyClient;
   model: string;
+}
+
+export interface OrchestratorOptions {
+  /** Backward-compat: client+model as the default provider. Either these or defaultProvider must be set. */
+  client?: OllamaClient;
+  model?: string;
+  /** Default provider used for all roles not explicitly configured. */
+  defaultProvider?: ProviderConfig;
+  /** Per-role overrides. When set, overrides defaultProvider for that role. */
+  plannerProvider?: ProviderConfig;
+  executorProvider?: ProviderConfig;
+  evaluatorProvider?: ProviderConfig;
+  compactorProvider?: ProviderConfig;
   registry?: ToolRegistry;
   /** Called for every meaningful agent event; mirrored into IDB events store. */
   onEvent?: (event: OrchestratorEvent) => void;
@@ -71,8 +87,12 @@ export interface OrchestratorOptions {
 }
 
 export class Orchestrator {
-  private readonly client: OllamaClient;
-  private readonly model: string;
+  private readonly defaultClient: AnyClient;
+  private readonly defaultModel: string;
+  private readonly plannerProvider?: ProviderConfig;
+  private readonly executorProvider?: ProviderConfig;
+  private readonly evaluatorProvider?: ProviderConfig;
+  private readonly compactorProvider?: ProviderConfig;
   private readonly registry: ToolRegistry;
   private readonly onEvent: (event: OrchestratorEvent) => void;
   private readonly maxSteps: number;
@@ -83,15 +103,40 @@ export class Orchestrator {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: OrchestratorOptions) {
-    this.client = opts.client;
-    this.model = opts.model;
+    const dp = opts.defaultProvider ?? (opts.client && opts.model ? { client: opts.client, model: opts.model } : null);
+    if (!dp) throw new Error('Orchestrator: must provide either defaultProvider or client+model');
+    this.defaultClient = dp.client;
+    this.defaultModel = dp.model;
+    this.plannerProvider = opts.plannerProvider;
+    this.executorProvider = opts.executorProvider;
+    this.evaluatorProvider = opts.evaluatorProvider;
+    this.compactorProvider = opts.compactorProvider;
     this.registry = opts.registry ?? createDefaultRegistry();
-    // Register vision.ground — needs client+model, so it's a factory, not in createDefaultRegistry.
-    this.registry.register(createVisionGroundTool(this.client, this.model));
+    // Register vision.ground — needs client+model from the executor's provider
+    // (vision is an executor-side tool). Cast to OllamaClient since vision
+    // expects an Ollama client; the default provider always is.
+    this.registry.register(createVisionGroundTool(this.defaultClient as OllamaClient, this.defaultModel));
     this.onEvent = opts.onEvent ?? (() => {});
     this.maxSteps = opts.maxSteps ?? 30;
     this.plannerThinking = opts.plannerThinking ?? true;
     this.evaluatorThinking = opts.evaluatorThinking ?? true;
+  }
+
+  /**
+   * Return the provider config for the given role — either a per-role override
+   * or the default provider. All four role runners use this to determine which
+   * LLM client + model to call.
+   */
+  private getProvider(role: 'planner' | 'executor' | 'evaluator' | 'compactor'): ProviderConfig {
+    const providers: Record<string, ProviderConfig | undefined> = {
+      planner: this.plannerProvider,
+      executor: this.executorProvider,
+      evaluator: this.evaluatorProvider,
+      compactor: this.compactorProvider,
+    };
+    const override = providers[role];
+    if (override) return override;
+    return { client: this.defaultClient, model: this.defaultModel };
   }
 
   /**
@@ -340,11 +385,12 @@ export class Orchestrator {
 
     await this.emit(prepared.taskId, 'role_start', { role: 'planner', isInitial, replanHint });
     const t0 = performance.now();
+    const plannerProv = this.getProvider('planner');
     const result = await runPlanner({
       state: prepared,
       registry: this.registry,
-      client: this.client,
-      model: this.model,
+      client: plannerProv.client as OllamaClient,
+      model: plannerProv.model,
       signal: this.abort?.signal,
       isInitial,
       replanHint,
@@ -413,11 +459,12 @@ export class Orchestrator {
     await this.emit(state.taskId, 'role_start', { role: 'executor', stepId: step?.id });
 
     const t0 = performance.now();
+    const execProv = this.getProvider('executor');
     const result = await runExecutor({
       state,
       registry: this.registry,
-      client: this.client,
-      model: this.model,
+      client: execProv.client as OllamaClient,
+      model: execProv.model,
       signal: this.abort?.signal,
     });
     const latencyMs = Math.round(performance.now() - t0);
@@ -642,10 +689,11 @@ export class Orchestrator {
       trigger: triggeredByFinish ? 'finish' : 'periodic',
     });
     const t0 = performance.now();
+    const evalProv = this.getProvider('evaluator');
     const result = await runEvaluator({
       state,
-      client: this.client,
-      model: this.model,
+      client: evalProv.client as OllamaClient,
+      model: evalProv.model,
       signal: this.abort?.signal,
       thinkingMode: this.evaluatorThinking,
       triggeredByFinish,
@@ -776,12 +824,13 @@ export class Orchestrator {
     const existingKeys = await store.existingFindingKeys(state.taskId);
 
     const t0 = performance.now();
+    const compProv = this.getProvider('compactor');
     const result = await runCompactor({
       goal: state.goal.text,
       scratchEntries: allScratch,
       existingKeys,
-      client: this.client,
-      model: this.model,
+      client: compProv.client as OllamaClient,
+      model: compProv.model,
       signal: this.abort?.signal,
     });
     void recordMetric({

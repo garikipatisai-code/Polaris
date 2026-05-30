@@ -4,6 +4,12 @@ import type { AgentStateHot, AgentEventType } from './agent_types';
 import type { OpSummary } from '../agent/metrics';
 import type { DomainTier } from '../agent/domain_tiers';
 
+export interface CloudProviderConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 export interface Settings {
   ollamaBaseUrl: string;
   model: string;
@@ -14,6 +20,13 @@ export interface Settings {
   plannerThinking: boolean;
   /** Thinking mode for the Evaluator role (M2.5+). Default on; disable on slow hardware. */
   evaluatorThinking: boolean;
+  /** Per-role cloud provider overrides. When set, routes that role to a cloud LLM. */
+  cloud?: {
+    planner?: CloudProviderConfig;
+    executor?: CloudProviderConfig;
+    evaluator?: CloudProviderConfig;
+    compactor?: CloudProviderConfig;
+  };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
