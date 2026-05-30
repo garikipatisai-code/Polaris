@@ -19,7 +19,7 @@
 //   - closeOwnedTabs cleanup at terminal phase
 
 import type { OllamaClient } from '../background/ollama';
-import { ToolRegistry, createDefaultRegistry } from './tools';
+import { ToolRegistry, createDefaultRegistry, createVisionGroundTool } from './tools';
 import { closeOwnedTabs } from './tools';
 import { runExecutor } from './roles/executor';
 import { runPlanner } from './roles/planner';
@@ -86,6 +86,8 @@ export class Orchestrator {
     this.client = opts.client;
     this.model = opts.model;
     this.registry = opts.registry ?? createDefaultRegistry();
+    // Register vision.ground — needs client+model, so it's a factory, not in createDefaultRegistry.
+    this.registry.register(createVisionGroundTool(this.client, this.model));
     this.onEvent = opts.onEvent ?? (() => {});
     this.maxSteps = opts.maxSteps ?? 30;
     this.plannerThinking = opts.plannerThinking ?? true;

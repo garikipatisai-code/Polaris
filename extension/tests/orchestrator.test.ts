@@ -635,3 +635,19 @@ describe('orchestrator: closeOwnedTabs cleanup hook fires at terminal', () => {
     expect(post?.ownedTabs).toEqual([]);
   });
 });
+
+describe('orchestrator: vision.ground tool registration', () => {
+  it('registers vision.ground in the orchestrator registry', () => {
+    const fake = new FakeOllamaClient({
+      planner: [],
+      executor: [],
+      evaluator: [],
+    });
+    const orchestrator = new Orchestrator({
+      client: fake as unknown as OllamaClient,
+      model: 'test',
+    });
+    const names = orchestrator['registry'].names();
+    expect(names).toContain('vision.ground');
+  });
+});
