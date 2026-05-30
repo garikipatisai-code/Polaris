@@ -396,3 +396,57 @@ describe('OllamaClient.embed', () => {
     expect(r).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 3a.1: ChatMessage images field serialization
+// The OllamaClient passes `messages: opts.messages` directly into the POST
+// body. Individual ChatMessage objects carry the optional `images` array, so
+// it should appear in the serialized JSON without any special handling.
+// ---------------------------------------------------------------------------
+
+describe('OllamaClient: images field', () => {
+  it('includes images in the chatOnce request body when message has them', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ message: { content: 'ok' }, done: true }),
+    );
+
+    const c = new OllamaClient('http://fake');
+    await c.chatOnce({
+      model: 'm',
+      messages: [
+        { role: 'user', content: 'describe this', images: ['data:image/png;base64,iVBOR...'] },
+      ],
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    const body = JSON.parse(init?.body as string) as {
+      messages: Array<{ role: string; content: string; images?: string[] }>;
+    };
+    expect(body.messages[0]?.images).toBeDefined();
+    expect(body.messages[0]?.images).toHaveLength(1);
+    expect(body.messages[0]?.images![0]).toBe('data:image/png;base64,iVBOR...');
+  });
+
+  it('includes images in the chatStream request body when message has them', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('{"done":true}\n', { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }),
+    );
+
+    const c = new OllamaClient('http://fake');
+    const it = c.chatStream({
+      model: 'm',
+      messages: [
+        { role: 'user', content: 'describe this', images: ['data:image/png;base64,iVBOR...'] },
+      ],
+    });
+    for await (const _ of it) { /* drain */ void _; }
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    const body = JSON.parse(init?.body as string) as {
+      messages: Array<{ role: string; content: string; images?: string[] }>;
+    };
+    expect(body.messages[0]?.images).toBeDefined();
+    expect(body.messages[0]?.images).toHaveLength(1);
+    expect(body.messages[0]?.images![0]).toBe('data:image/png;base64,iVBOR...');
+  });
+});
