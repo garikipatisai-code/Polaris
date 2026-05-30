@@ -13,6 +13,9 @@
 
 import { z } from 'zod';
 import type { OllamaClient } from '../../background/ollama';
+import type { CloudClient } from '../../background/cloud_client';
+import type { DriverResponse } from '../../background/chat_driver';
+import { normalizeCloudResponse } from '../../background/chat_driver';
 import type { AgentStateHot } from '../../shared/agent_types';
 import { evaluatorSystemPrompt } from '../prompts/evaluator';
 import { parseJSONPermissive } from './planner';
@@ -23,7 +26,7 @@ export type Verdict = 'done' | 'continue' | 'replan' | 'abort';
 
 export interface EvaluatorInput {
   state: AgentStateHot;
-  client: OllamaClient;
+  client: OllamaClient | CloudClient;
   model: string;
   signal?: AbortSignal;
   thinkingMode: boolean;
@@ -82,7 +85,7 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     ? 'Evaluate whether the executor\'s proposed finish answer satisfies the goal. Return JSON only.'
     : 'Evaluate progress so far. Return your verdict as JSON only.';
 
-  let response = await client.chatOnce({
+  const rawInit = await (client as any).chatOnce({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -92,9 +95,12 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     think: thinkingMode,
     signal,
   });
-  let promptTokens = response.prompt_eval_count ?? estimated;
-  let genTokens = response.eval_count ?? 0;
-  let content = response.message?.content ?? '';
+  const firstResp: DriverResponse = 'choices' in rawInit
+    ? normalizeCloudResponse(rawInit as any)
+    : rawInit as DriverResponse;
+  let promptTokens = firstResp.prompt_eval_count ?? estimated;
+  let genTokens = firstResp.eval_count ?? 0;
+  let content = firstResp.message?.content ?? '';
   let parsed: unknown;
   let retried = false;
 
@@ -123,16 +129,19 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
         content: '[previous output was unparseable JSON — produce the verdict JSON now]',
       };
     }
-    response = await client.chatOnce({
+    const rawRetry = await (client as any).chatOnce({
       model,
       messages: retryMessages,
       format: 'json',
       think: false,
       signal,
     });
-    promptTokens += response.prompt_eval_count ?? 0;
-    genTokens += response.eval_count ?? 0;
-    content = response.message?.content ?? '';
+    const retryResp: DriverResponse = 'choices' in rawRetry
+      ? normalizeCloudResponse(rawRetry as any)
+      : rawRetry as DriverResponse;
+    promptTokens += retryResp.prompt_eval_count ?? 0;
+    genTokens += retryResp.eval_count ?? 0;
+    content = retryResp.message?.content ?? '';
     try {
       parsed = parseJSONPermissive(content);
     } catch (e2) {

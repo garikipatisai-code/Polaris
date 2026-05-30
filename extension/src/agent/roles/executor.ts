@@ -9,6 +9,9 @@
 // orchestrator turns into scratchpad entries + event log writes.
 
 import type { OllamaClient } from '../../background/ollama';
+import type { CloudClient } from '../../background/cloud_client';
+import type { DriverResponse } from '../../background/chat_driver';
+import { normalizeCloudResponse } from '../../background/chat_driver';
 import type { ToolRegistry, ToolContext } from '../tools';
 import { SPECIAL_TOOLS } from '../tools';
 import type { AgentStateHot } from '../../shared/agent_types';
@@ -21,7 +24,7 @@ import { log } from '../log';
 export interface ExecutorInput {
   state: AgentStateHot;
   registry: ToolRegistry;
-  client: OllamaClient;
+  client: OllamaClient | CloudClient;
   model: string;
   signal?: AbortSignal;
 }
@@ -76,7 +79,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
   const userAnchor = 'Take the next action toward completing the goal. Call exactly one tool now.';
 
   // First attempt
-  const first = await client.chatOnce({
+  const rawFirst = await (client as any).chatOnce({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -86,6 +89,11 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
     think: false,
     signal,
   });
+  // Normalize cloud responses to DriverResponse shape; Ollama responses
+  // already match (they're a superset).
+  const first: DriverResponse = 'choices' in rawFirst
+    ? normalizeCloudResponse(rawFirst as any)
+    : rawFirst as DriverResponse;
   let toolCalls = first.message?.tool_calls ?? [];
   let promptTokens = first.prompt_eval_count ?? estimatedPromptTokens;
   let genTokens = first.eval_count ?? 0;
@@ -117,13 +125,16 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
         content: '[previous output was unparseable — call exactly one tool now]',
       };
     }
-    const second = await client.chatOnce({
+    const rawSecond = await (client as any).chatOnce({
       model,
       messages: retryMessages,
       tools: toolDefs,
       think: false,
       signal,
     });
+    const second: DriverResponse = 'choices' in rawSecond
+      ? normalizeCloudResponse(rawSecond as any)
+      : rawSecond as DriverResponse;
     toolCalls = second.message?.tool_calls ?? [];
     promptTokens += second.prompt_eval_count ?? approxTokens(systemPrompt + nudge + failedContent);
     genTokens += second.eval_count ?? 0;

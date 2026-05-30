@@ -19,7 +19,7 @@
 //   - closeOwnedTabs cleanup at terminal phase
 
 import type { OllamaClient } from '../background/ollama';
-import type { CloudClient } from '../background/cloud_client';
+import type { AnyClient } from '../background/chat_driver';
 import { ToolRegistry, createDefaultRegistry, createVisionGroundTool } from './tools';
 import { closeOwnedTabs } from './tools';
 import { runExecutor } from './roles/executor';
@@ -57,7 +57,7 @@ export interface OrchestratorEvent {
   data?: unknown;
 }
 
-export type AnyClient = OllamaClient | CloudClient;
+export { type AnyClient };
 
 export interface ProviderConfig {
   client: AnyClient;
@@ -463,7 +463,7 @@ export class Orchestrator {
     const result = await runExecutor({
       state,
       registry: this.registry,
-      client: execProv.client as OllamaClient,
+      client: execProv.client,
       model: execProv.model,
       signal: this.abort?.signal,
     });
@@ -692,7 +692,7 @@ export class Orchestrator {
     const evalProv = this.getProvider('evaluator');
     const result = await runEvaluator({
       state,
-      client: evalProv.client as OllamaClient,
+      client: evalProv.client,
       model: evalProv.model,
       signal: this.abort?.signal,
       thinkingMode: this.evaluatorThinking,
