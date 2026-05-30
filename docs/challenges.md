@@ -40,30 +40,36 @@ verdict abort — unrecoverable: Ollama chat timed out after 300000ms
 
 **Effect:** Slower inference than full GPU fit. The 38 tok/s benchmark was for short "pong" responses. Real agent prompts with multi-thousand-token context are slower.
 
+Also benchmarked `qwen3.6:35b-a3b` (MoE, 3B active params, 23 GB file) on the same hardware: it runs 85%/15% CPU/GPU at ~11 tok/s. Usable for Planner but too slow for Executor.
+
 **Options:**
 - Switch to Q4_K_M quantization (3.4 GB, fits entirely on GPU)
 - Reduce `num_ctx` from the current setting to keep KV cache smaller
 
-## 4. NVIDIA driver not persistent across reboots
+## 4. Model keeps repeating the same actions instead of progressing
 
-The custom `linux-image-surface` kernel (`6.19.8-surface-3`) was installed on this Lenovo ThinkStation P330. The nvidia kernel module was not built for this kernel. After the user installed `dkms` and ran `modprobe nvidia`, the driver loaded, but it's unclear if it persists across reboots.
+qwen3.5:4b often gets stuck in repetitive loops:
 
-**Symptoms:**
-- `modprobe: FATAL: Module nvidia not found in directory /lib/modules/6.19.8-surface-3`
-- After installing dkms, the module loaded but DKMS reported the source directory missing (`/usr/src/nvidia-535 does not exist`)
+- After `tab.screenshot` succeeds, the model opens a *new* tab with the same URL instead of calling `vision.ground` on the existing tab. This repeats multiple times — each cycle opens another duplicate tab, takes another screenshot, fills the scratchpad, triggers compaction, and never makes progress toward the goal.
+- The model sometimes skips tool calls entirely and fabricates the answer from context.
+- Example: a 10-executor-turn trace shows 4 duplicate `tab.open` calls (google.com opened 4 times), 0 `vision.ground` calls, yet the Evaluator still approved the task as "done."
+- The Evaluator approved a task as complete even though `vision.ground` was never called — it accepted the model's fabricated claim that vision had verified the page.
 
-**Recommendation:** Remove the Surface kernel and switch to the standard Ubuntu kernel, then rebuild the NVIDIA driver via DKMS.
-
-## 5. Model improvises instead of calling tools correctly
-
-qwen3.5:4b sometimes skips tool calls entirely or invents arguments. Examples:
-- After receiving a screenshot, instead of calling `vision.ground({tabId: ...})`, it opens a new tab with the same URL
-- When asked to verify page state, it fabricates the answer without actually calling `vision.ground`
-- The Evaluator approved the task as "done" even though `vision.ground` was never called
-
-This is a model capability limitation — qwen3.5:4b is 3.4 GB and at the edge of reliably following multi-step tool-use chains.
+**Root cause:** qwen3.5:4b is a 3.4 GB model at the edge of reliably following multi-step tool-use chains. When confused, it defaults to "open another tab" as a generic recovery action.
 
 **Options:**
 - Upgrade to a stronger model for the Executor role (cloud fallback was designed for this — Phase 2)
-- Add more explicit step-by-step instructions in the Executor prompt
-- Add a system-level guard that forces tool calls in specific sequences
+- Add explicit "tab reuse" instructions: after opening a tab, prefer using its existing tabId for subsequent actions
+- Add a breaker that detects consecutive duplicate `tab.open` calls and forces a different action
+- Deprecate qwen3.5:4b as the Executor once DeepSeek V4-Flash cloud routing works (Phase 2)
+
+## 5. Tab management issues
+
+The agent doesn't reuse existing tabs effectively:
+
+- `tab.list` returns owned tabs but the model ignores them and opens new ones
+- After `tab.screenshot` captures a valid screenshot, the model opens a fresh tab instead of proceeding with the existing tabId
+- Each duplicate `tab.open` adds to `ownedTabs` but these tabs are never cleaned up during the task, only at terminal
+- The `tab.screenshot` tool proved reliable via CDP `Page.captureScreenshot` — taking the screenshot is not the problem; the model just doesn't know what to do after getting it
+
+**Needs:** Better prompt guidance that "tab.open is expensive — reuse tabIds you already have."
