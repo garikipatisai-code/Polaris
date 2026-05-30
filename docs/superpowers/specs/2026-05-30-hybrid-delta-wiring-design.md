@@ -17,7 +17,7 @@ The Hybrid Delta wave landed 4 of 6 phases as **scaffolding that isn't reachable
 
 ## 2. Goals / Non-goals
 
-**Goals:** Make the cloud path actually reachable + correct (incl. tool-calling); protect PII on cloud egress; harden page actions and make them provably testable; reconcile docs to reality.
+**Goals:** Make the cloud path actually reachable + correct (incl. tool-calling); enable **per-role *local* model routing** (fast `qwen3.5:4b` vs capable `qwen3.6:35b-a3b`) so we stop forcing the 4B to do reasoning it fails at and wastes tokens on; protect PII on cloud egress; harden page actions and make them provably testable; reconcile docs to reality.
 
 **Non-goals (explicitly deferred):** SoM↔AXTree fusion (`som.ts` stays dead); routing Compactor to cloud (stays local); a provider registry / multi-provider catalog; prompt-caching headers; full-page (vs viewport) screenshots.
 
@@ -31,6 +31,7 @@ The Hybrid Delta wave landed 4 of 6 phases as **scaffolding that isn't reachable
 | Probe files | **Restore qwen3.5** `probe_results.*`; keep the qwen3.6 run as `probe_results_qwen36.*` |
 | Sequencing | **Page-action hardening + cloud both in this build**, one combined real-browser smoke harness at the end |
 | Fallback | Include auto-fallback to local on cloud error |
+| Local model routing | Per-role provider can target the fast **qwen3.5:4b**, the capable **qwen3.6:35b-a3b**, OR cloud. The role→model **distribution defaults are PENDING** the Gemini capability research + Linux-box verification (see §10). The *mechanism* lands now. |
 
 ## 4. Design
 
@@ -40,7 +41,10 @@ The Hybrid Delta wave landed 4 of 6 phases as **scaffolding that isn't reachable
 - **Tests:** assert `DOM.getDocument` precedes `resolveNode` on the backend path; assert `scrollIntoViewIfNeeded` precedes `getContentQuads`; existing 19 tests still pass.
 - Doc-string + manifest staleness fixes carried along (tab.screenshot "active tab restored", activeTab comment).
 
-### Stream B — Cloud wiring
+### Stream B — Model routing + cloud wiring
+
+**B0. Per-role model routing (three-tier provider).** The per-role `ProviderConfig {client, model}` already abstracts model choice — generalize so each reasoning role resolves to one of: the **default fast local model** (`qwen3.5:4b`), a **per-role local-model override** (e.g. `qwen3.6:35b-a3b` on the *same* Ollama server), or a **cloud provider**. `Settings` gains `roleModels?: { planner?, executor?, evaluator?, compactor?: string }` (local Ollama model override). Resolution precedence per role: `cloud[role]` → `CloudClient`; else `roleModels[role]` → `OllamaClient(default url)` + that model; else default `{ollama, settings.model}`. The distribution *defaults* (which model per role) are decided after research + verification (§10); only the *mechanism* lands now.
+
 **B1. One choke point — `driveChatOnce` in `chat_driver.ts`:**
 ```ts
 export interface DriveProvider { client: AnyClient; model: string }
@@ -67,9 +71,9 @@ export async function driveChatOnce(primary: DriveProvider, opts: DriveOptions, 
 
 **B5. `orchestrator.ts`:** for each role, compute `fallback = providerIsCloud ? {client: defaultClient, model: defaultModel} : undefined` and pass to the runner; remove the planner `as OllamaClient` cast; keep `getProvider` resolution.
 
-**B6. `service_worker.ts`:** at both `new Orchestrator(...)` sites, read `settings.cloud`; for each of planner/executor/evaluator with a configured `CloudProviderConfig`, build a `CloudClient(baseUrl, apiKey)` and pass `{role}Provider:{client, model}`; always pass the local default provider.
+**B6. `service_worker.ts`:** at both `new Orchestrator(...)` sites, read `settings.cloud` **and `settings.roleModels`**; resolve each role per the B0 precedence (cloud → `CloudClient`; local-model-override → `OllamaClient` + override model; else default), and pass the resolved per-role providers + the local default.
 
-**B7. Settings UI (settings drawer, side panel):** a "Cloud (BYOK)" section — per role (Planner/Executor/Evaluator): enable toggle + `baseUrl` (default `https://api.deepseek.com/v1`) + `apiKey` (password field) + `model` (default `deepseek-chat`). Persists into `settings.cloud` via the existing `settings.set` (`messages.ts` already has `CloudProviderConfig`; no protocol change).
+**B7. Settings UI (settings drawer, side panel):** per reasoning role (Planner/Executor/Evaluator) a **"Model source" selector** — `Default (4B)` / `Local 35B (qwen3.6:35b-a3b)` / `Cloud (BYOK)`. Selecting **Local 35B** persists a model string into `settings.roleModels[role]`. Selecting **Cloud** reveals `baseUrl` (default `https://api.deepseek.com/v1`) + `apiKey` (password field) + `model` (default `deepseek-chat`), persisted into `settings.cloud[role]`. Uses the existing `settings.set`; `messages.ts` adds `roleModels?` alongside the existing `cloud?`.
 
 ### Stream C — PII sandwich + dedup fix
 - **Sandwich** lives in `driveChatOnce`'s cloud path: `resetAnonymizeCounters()`, anonymize every outbound message `content` (accumulate one `map`), send; on return `deanonymize` the response `content` **and** each tool-call `arguments` JSON string (before `JSON.parse`). Local path untouched (no anonymization needed).
@@ -94,7 +98,7 @@ A runnable harness (modeled on `scripts/browser_smoke.py`) the **user** runs on 
 - `actions.test.ts`: +DOM.getDocument-before-resolveNode, +scrollIntoViewIfNeeded ordering.
 - `cloud_client.test.ts`: +tools in body, +response_format on json, +timeout fires.
 - `chat_driver.test.ts` (new): `driveChatOnce` local passthrough; cloud normalize + `tool_calls` arg-parse; PII sandwich round-trip; fallback on cloud error; no-fallback-on-abort.
-- `orchestrator.test.ts`: per-role cloud routing; fallback wiring; planner cloud path.
+- `orchestrator.test.ts`: per-role routing (cloud, local-model-override via `roleModels`, default); fallback wiring; planner cloud path.
 - `anonymize.test.ts`: both-copies-removed.
 - (UI) light test or manual note for the settings section.
 
@@ -107,4 +111,14 @@ A runnable harness (modeled on `scripts/browser_smoke.py`) the **user** runs on 
 SoM fusion; compactor-on-cloud; provider registry; prompt-caching; full-page screenshots; real-vision verification on Linux.
 
 ## 9. Next step
-On approval → `writing-plans` to produce the ordered, TDD task plan, then implement on a feature branch.
+On approval → resolve the model-distribution defaults via the §10 flow → `writing-plans` to produce the ordered, TDD task plan → implement on this feature branch.
+
+## 10. Model-distribution research & verification (gates the distribution *defaults* only)
+
+The routing *mechanism* (B0) is locked and implemented regardless. Which model each role defaults to follows this flow:
+
+1. **Gemini deep research (user-run).** Capability comparison of `qwen3.5:4b` vs `qwen3.6:35b-a3b` across the four roles + Ollama multi-model swap/keep-alive behavior on the 5 GB-VRAM / 32 GB-RAM box → produces a **findings file**.
+2. **Linux-box verification.** From the findings, Claude generates a **verification-guide `.md`** that the Claude CLI on the Linux/P2200 box executes — empirically testing the proposed role→model assignments (latency per role at real budgets, tool-call reliability) and the model-swap/keep-alive cost against the real hardware → returns a **results `.md`**.
+3. **Decision.** Claude reviews research + empirical results and locks the role→model distribution table, which feeds the implementation defaults.
+
+**Starting hypothesis (to be confirmed/refuted):** Planner + Evaluator → `qwen3.6:35b-a3b`; Executor + Compactor → `qwen3.5:4b`; Executor additionally cloud-capable. The observed token-waste is mostly in the Executor — a local split mainly improves plan/verdict *quality* (fewer doomed loops); Executor *reliability* still leans on cloud or better scaffolding. Open risk: model-swap thrashing when alternating a GPU-resident 4B and a CPU-spilled 35B per task.
