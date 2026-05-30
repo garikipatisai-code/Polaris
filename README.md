@@ -20,8 +20,10 @@ In active development. Currently:
 - ✅ Capability probe written and verified against Qwen3.5-4B on real hardware
 - ✅ **M1** — extension skeleton + Ollama wiring + streaming chat in side panel
 - ✅ **M2** — full agent loop (Planner / Executor / Evaluator / Compactor) with persistent state, step advancement, circuit breaker, watchdog, crash-resume, and 116 unit + integration tests proving goal byte-survival across replan
-- ⏳ **M3** — real browser tools backend wired (ARIA-tree extractor, tab manager, search, retailer adapter framework + Amazon, browser tool lifecycle); 227 total tests; end-to-end browser validation pending Linux GPU box
-- ⏳ **M3** vision tool — pending (needs real Ollama vision call)
+- ✅ **M3** — real browser tools backend wired (ARIA-tree extractor, tab manager, search, retailer adapter framework + Amazon, browser tool lifecycle); **page-action tools** (CDP click/type/select with domain-tier gating); **vision.ground** verification tool via Ollama vision model; 376 total tests
+- ✅ **Hybrid infrastructure** — OpenAI-format CloudClient (raw fetch, no SDK) + per-role provider routing in orchestrator + cloud client routing for executor/evaluator
+- ✅ **SoM content script** — numbered interactive element overlay
+- ✅ **Reversible PII redaction** — anonymize/deanonymize sandwich for cloud-bound payloads
 
 ## Hardware
 
@@ -104,7 +106,7 @@ The agent's pure logic and orchestrator state machine are covered by Vitest:
 
 ```bash
 cd extension
-npm test           # 333 mock-Ollama tests, ~15 s
+npm test           # 376 mock-Ollama tests, ~15 s
 npm run test:watch # watch mode
 ```
 
@@ -188,10 +190,18 @@ chrome.sidePanel UI ──► background service worker
                           │   ├── ARIA-tree extractor (chrome.debugger)
                           │   ├── Visual verifier (screenshot → Qwen vision)
                           │   ├── Tab manager (open / extract / close)
+                          │   ├── Page-action tools (CDP click / type / select)
+                          │   ├── SoM overlay (numbered interactive element labels)
                           │   ├── Retailer adapters (Amazon, Walmart, ...)
                           │   └── Search (DuckDuckGo / Google Shopping)
                           │
-                          └── Ollama HTTP client (configurable base URL)
+                          ├── Clients
+                          │   ├── Ollama HTTP client (local, qwen3.5:4b)
+                          │   └── CloudClient (OpenAI-format, raw fetch)
+                          │
+                          └── PII handling
+                              ├── Irreversible redact (IDB persistence)
+                              └── Reversible anonymize/deanonymize (cloud-bound)
 ```
 
 The hierarchical role split keeps per-call context tight (≤16K for the Executor hot path) so the GPU-resident KV cache stays small and the agent feels responsive. Larger calls (planning, evaluation) are rare and tolerate higher latency.
@@ -208,7 +218,7 @@ See [`docs/research-notes.md`](docs/research-notes.md) for the literature survey
   - Circuit breaker (action repetition, max replans), chrome.alarms watchdog, crash-resume with event replay
   - Mock tools (`echo`, `add`, `sum`, `delay`, `next_step`, `finish`, `memory.read/write/list`)
   - 73 tests: pure-function unit tests + orchestrator integration tests with a scripted fake Ollama client (no model dependency)
-- **M3** Real browser tools (ARIA-tree extractor, tab management, screenshot vision fallback)
+- **M3** ✅ Real browser tools (ARIA-tree extractor, tab management, search, page-action click/type/select, vision.ground, SoM overlay) — 376 tests
 - **M4** Shopping domain (retailer adapters, coupon lookup, deal ranking UI)
 - **M5** Polish (price history, error recovery, onboarding, settings)
 

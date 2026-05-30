@@ -81,11 +81,9 @@ in "Open questions" first.
 
 ## Current state — UPDATE THIS WHEN YOU FINISH WORK
 
-**Last touched:** 2026-05-25 (Mac, Claude Opus 4.7)
-**Last shipped:** M3.5.1 panel polish — collapsible inline events, per-op metrics block, domain tier settings UI (333 mock tests + 2 fast-tier integration passing; browser verification queued for Linux Session 2)
+**Last touched:** 2026-05-29 (Mac, DeepSeek V4-Flash)
+**Last shipped:** Hybrid delta implementation — 4 of 6 phases delivered: vision.ground tool, page-action tools (click/type/select), OpenAI-format CloudClient + per-role provider routing, executor/evaluator cloud routing via AnyClient; SoM content script; reversible PII anonymize/deanonymize (376 mock tests + 2 fast-tier integration passing)
 **Current branch:** main
-
-### What's done
 
 - `probe.py` — capability probe verified on Linux box (38 tok/s, needle@128K passes, vision works ≥1200 px)
 - `extension/` — full agent stack:
@@ -172,19 +170,26 @@ in "Open questions" first.
     - **Polish #2 — per-op metrics block:** small latency table (`op | n | ok | p50 | p95 | mean`, sorted by mean desc) renders below a terminal agent run. Same data as `polaris.metrics.summary(taskId)` from the SW console — but visible without DevTools. Added `metrics.get` / `metrics.value` to the panel↔SW protocol; SW handler delegates to `metrics.summary(taskId)`.
     - **Polish #3 — domain tier settings UI:** settings drawer gained a "Domain trust tiers" section. Lists configured hosts with per-row tier dropdown (`read-only` / `click-only` / `full-action`) + remove button; an Add row at the bottom takes a host (or pasted URL — `https://www.target.com/foo` normalizes to `target.com`) + tier dropdown. Backed by `chrome.storage.local['polaris.domain_tiers']` via new `domainTiers.list` / `domainTiers.set` messages. Lazy-fetched on drawer open.
     - **Bundle:** panel 158 → 162 KB, SW 162 → 164 KB (+4 KB each). Tests still 333/333 — these are panel + protocol additions; no new backend logic to test in unit form. Browser verification queued for the next Linux session in `extension/docs/linux-validation.md` "Session 2 task" — Mac sandbox blocks Chrome socket binding so this is the natural place to do it.
+  - **Hybrid delta (NEW, 2026-05-29):** 13 commits, 6 phases implementing the gap between `docs/architecture-delta.md` and the codebase:
+    - **Phase 3a: vision.ground tool** — `createVisionGroundTool` factory (client+model binding), 1200px minimum width guard (non-fatal BrowserToolError), PNG data-URI regex validation, Ollama vision call via `images` field. Registered in orchestrator at construction. (+7 tests)
+    - **Phase 5: Page-action tools** — `tab.click`, `tab.type`, `tab.select` via CDP (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Runtime.evaluate`). Domain tier gating (`assertCanAct`). Element resolution via `backendDOMNodeId` (preferred) or CSS selector fallback. proper debugger attach/detach lifecycle. tab.type uses `Runtime.evaluate` for multi-char field clearing. (+19 tests)
+    - **Phase 1: Hybrid-ready infrastructure** — `CloudClient` (OpenAI-format, raw fetch, no SDK) with `chatOnce` + `chatStream` (SSE SSE parsing). `OrchestratorOptions` expanded with `ProviderConfig` per role (`defaultProvider` + per-role overrides), backward-compatible with existing `client+model` callers. `Settings.CloudProviderConfig` for future UI. (+4 tests)
+    - **Phase 2: Cloud routing** — `chat_driver.ts` with `AnyClient` union type and `DriverResponse` normalization. Executor and evaluator role runners accept `OllamaClient | CloudClient`; normalize cloud `{choices}` responses to `{message}` shape. `getProvider(role)` lookup in orchestrator. (+0 tests, refactor only)
+    - **Phase 3b: Set-of-Marks content script** — `src/content/som.ts` injects numbered overlay over interactive elements. Messaging: `som.generate` → marker map, `som.clear` → remove. Registered in manifest via `content_scripts`. (+0 tests)
+    - **Phase 4: Reversible PII redaction** — `src/agent/anonymize.ts` replaces PII with `<KIND_N>` placeholders + mapping table; `deanonymize.ts` restores originals; `reanonymize.ts` re-applies. Additive to existing irreversible `redact.ts`. (+8 tests)
+    - **Total at end of session: 376 mock tests passing.** 13 commits ahead of origin/main.
 - `docs/research-notes.md` — literature survey
-- `ISSUES.md` — original M1 CORS issues, all resolved
 
-### What's next (M3 work list)
+### What's next
 
-- [ ] **User: smoke-test M2 in Chrome end-to-end** with the canonical task (`store the numbers 17, 25, and 8 in memory namespace 'nums' under keys a b c, read them back, finish with their sum`) — should now show step transitions in the plan tree, ≥1 compaction event mid-run, and a correct sum
-- [x] **ARIA-tree extractor** via `chrome.debugger` — wired (parser + tool + tests; needs real-browser end-to-end on Linux)
-- [x] **Tab manager** (open / extract / screenshot / wait_loaded / close) — wired with mocked tests; per-task ownership + abort cleanup
-- [ ] **Screenshot vision tool** — needs real Ollama vision call (deferred until Linux box)
-- [x] **Retailer adapter framework + Amazon** — wired; Walmart/Target/Best Buy can be added mechanically
-- [x] **Search tool** — DuckDuckGo HTML scrape; regex-based parser
-- [ ] **Browser end-to-end test against real pages** (Linux)
-- [ ] **Vision tool with verifier pattern** (Linux)
+- [x] **vision.ground tool** — factory + orchestrator registration ✅ shipped
+- [x] **Page-action tools (click/type/select)** — CDP + domain tiers ✅ shipped
+- [x] **Cloud client + per-role routing** — OpenAI-format, raw fetch ✅ shipped  
+- [x] **SoM content script** — numbered overlay + manifest entry ✅ shipped
+- [x] **Reversible PII sandwich** — anonymize/deanonymize ✅ shipped
+- [ ] **Real-browser end-to-end validation** — test the new CDP tools (click/type/select) against real pages on Linux
+- [ ] **DeepSeek V4-Flash cloud executor** — wire actual DeepSeek API key + fallback into CloudClient
+- [ ] **AXTree + SoM fusion** — coordinate-space alignment between ARIA backendDOMNodeId and content-script bounding boxes
 
 ### Open questions / blockers
 
@@ -234,23 +239,10 @@ cd extension && npm install && npm run build
 python3 scripts/browser_smoke.py
 ```
 
-### What's next (M2 work list)
+### Open questions / blockers (remaining phases 2 items)
 
-- [ ] **User: verify M1.1 in Chrome end-to-end** (see recipe above)
-- [ ] Persistent agent state schema: GOAL, PLAN, FINDINGS, VISITED, BUDGETS,
-      SCRATCHPAD — backed by `chrome.storage.local` for small things and
-      IndexedDB for the findings archive
-- [ ] Planner role (rare calls, thinking ON, ≤32K context budget)
-- [ ] Executor role (hot path, thinking OFF, ≤6K budget)
-- [ ] Evaluator role (periodic, thinking ON, ≤8K budget)
-- [ ] Compactor: scratchpad → structured findings summarizer
-- [ ] Mock tools (`echo`, `add`, `delay`, `memory.write/read`)
-- [ ] Synthetic stress test: artificially fill context, verify goal survives
-
-### Open questions / blockers
-
-- None blocking M2 right now — once user confirms M1.1 streams cleanly,
-  we start the agent loop work.
+- Phase 2 DeepSeek V4-Flash integration needs API key management in settings UI and auto-fallback wiring
+- Phase 3b AXTree+SoM fusion needs coordinate-space alignment and dual-channel verification pipeline
 
 ---
 
@@ -290,6 +282,7 @@ to decide budgets, not the 262 K theoretical context.
 
 ## Recent decisions (append at top — most recent first)
 
+- **2026-05-29** Hybrid delta implementation: 13 commits closing 4 of 6 architecture-delta phases. vision.ground tool is a factory (needs client+model), not a plain export — registered in orchestrator after createDefaultRegistry. tab.type uses Runtime.evaluate for field clearing instead of single backspace (which only deletes one char). CloudClient is raw fetch() with no SDK. Per-role provider config is backward-compatible (existing `{client, model}` callers unaffected). PII redaction is two-tier: irreversible for disk, reversible for cloud.
 - **2026-05-25 night** Removed the `OllamaClient.rerank()` method, the
   `settings.rerankerModel` field, and all qwen3-embedding / qwen3-reranker
   documentation after a Gemini-sourced benchmark check. Headline reasons:
@@ -356,26 +349,17 @@ to decide budgets, not the 262 K theoretical context.
 
 **If you're starting fresh on this repo:**
 1. Run `python3 probe.py` once on the Linux box to confirm Ollama is up
-   and the model is responsive on whatever the current hardware looks
-   like. The results from the last run are in `probe_results.json` if
-   recent enough to trust.
-2. Check the current `## Current state` section above for what's next.
-3. Use `TaskCreate` to track the work items in the M2 list.
+   and the model is responsive.
+2. Check `## Current state` for what's been shipped.
+3. The delta plan at `docs/superpowers/plans/2026-05-29-hybrid-delta-implementation.md`
+   has the remaining Phase 2 items (DeepSeek cloud executor) and Phase 3b (AXTree+SoM fusion).
 
-**If you're picking up M1 testing:**
-- `cd extension && npm install && npm run build`
-- Load `extension/dist/` into Chrome via chrome://extensions → Developer
-  mode → Load unpacked
-- Open side panel, set Ollama URL, click Test Connection, send a message
-- If the CRXJS pinned version `^2.0.0-beta.28` is stale, run `npm outdated`
-  and bump it. CRXJS evolves quickly.
-
-**If you're starting M2:**
-- Don't write any agent code until M1 streaming is *confirmed working*
-  end-to-end. A broken M1 will hide M2 bugs.
-- Mock tools first, real browser tools later (that's M3).
-- The compactor is the most architecturally important piece — design it
-  first, with tests that artificially fill the scratchpad.
+**If you're picking up the remaining hybrid delta phases:**
+- Phase 2 DeepSeek integration: wire real DeepSeek API into CloudClient, add auto-fallback
+  to local Ollama on cloud failure. API key management in chrome.storage.local.
+- Phase 3b fusion: align ARIA tree `backendDOMNodeId` with SoM content-script bounding boxes.
+  vision.ground verification pipeline.
+- Test suite baseline: `cd extension && npm test` → 376 tests.
 
 **Before you sign off, update:**
 - `## Current state` with what you changed
