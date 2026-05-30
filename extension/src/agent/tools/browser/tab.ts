@@ -188,26 +188,8 @@ async function chromeTabsGet(tabId: number): Promise<chrome.tabs.Tab> {
   return chrome.tabs.get(tabId);
 }
 
-async function chromeTabsUpdate(
-  tabId: number,
-  opts: chrome.tabs.UpdateProperties,
-): Promise<chrome.tabs.Tab | undefined> {
-  return chrome.tabs.update(tabId, opts);
-}
-
 async function chromeTabsRemove(tabId: number): Promise<void> {
   return chrome.tabs.remove(tabId);
-}
-
-async function chromeTabsCaptureVisible(
-  windowId: number,
-  options: chrome.tabs.CaptureVisibleTabOptions,
-): Promise<string> {
-  return chrome.tabs.captureVisibleTab(windowId, options);
-}
-
-async function chromeTabsQueryActive(windowId: number): Promise<chrome.tabs.Tab[]> {
-  return chrome.tabs.query({ active: true, windowId });
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -538,39 +520,37 @@ export const tabScreenshotTool: ToolHandler<
   execute: async (args) => {
     return withBrowserTimeout(
       async () => {
-        // captureVisibleTab only captures the *active* tab in the window.
-        // The agent uses background tabs (active:false), so we briefly
-        // activate the target, capture, then restore the prior active tab.
-        const target = await chromeTabsGet(args.tabId);
-        const windowId = target.windowId;
-
-        // Find the currently-active tab so we can restore it afterward.
-        let priorActive: number | null = null;
+        // Use CDP Page.captureScreenshot via chrome.debugger rather than
+        // chrome.tabs.captureVisibleTab, because the latter requires either
+        // <all_urls> host_permission or activeTab consent on the specific
+        // tab — and programmatically-opened tabs don't carry activeTab
+        // consent. We already have the 'debugger' permission.
+        const target: { tabId: number } = { tabId: args.tabId };
         try {
-          const actives = await chromeTabsQueryActive(windowId);
-          const a = actives.find((t) => typeof t.id === 'number' && t.id !== args.tabId);
-          if (a && typeof a.id === 'number') priorActive = a.id;
-        } catch {
-          // If query fails, we still proceed — restoration is best-effort.
+          await chrome.debugger.attach(target, '1.3');
+        } catch (e) {
+          throw new BrowserToolError(
+            `tab.screenshot: could not attach debugger to tab ${args.tabId}: ${(e as Error).message}`,
+            { fatal: false },
+          );
         }
 
         let dataUri: string;
         try {
-          await chromeTabsUpdate(args.tabId, { active: true });
-          dataUri = await chromeTabsCaptureVisible(windowId, { format: 'png' });
-        } finally {
-          // Restore prior active tab regardless of capture outcome.
-          if (priorActive !== null) {
-            try {
-              await chromeTabsUpdate(priorActive, { active: true });
-            } catch {
-              // The prior active may have been closed in the meantime —
-              // best-effort restore, no error to surface.
-            }
+          const result = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
+            format: 'png',
+            fromSurface: true,
+          }) as { data?: string } | undefined;
+          const b64 = result?.data;
+          if (!b64) {
+            throw new BrowserToolError('tab.screenshot: Page.captureScreenshot returned no data', { fatal: false });
           }
+          dataUri = `data:image/png;base64,${b64}`;
+        } finally {
+          try { await chrome.debugger.detach(target); } catch { /* best-effort */ }
         }
 
-        if (typeof dataUri !== 'string' || dataUri.length < 1000) {
+        if (dataUri.length < 1000) {
           throw new BrowserToolError(
             'tab.screenshot: too small — image may have failed',
             { fatal: false },
@@ -578,15 +558,10 @@ export const tabScreenshotTool: ToolHandler<
         }
 
         const dims = parsePngDimensions(dataUri);
-        // If the parser couldn't recover dimensions, surface zeros rather
-        // than failing — the model can still try OCR / vision if needed.
         const widthPx = dims?.widthPx ?? 0;
         const heightPx = dims?.heightPx ?? 0;
 
         if (widthPx > 0 && widthPx < MIN_VISION_WIDTH_PX) {
-          // Vision tooling requires ≥1200 px wide — smaller and the model
-          // hallucinates instead of refusing. Warn but don't reject; the
-          // caller may not be feeding this to vision.
           console.warn(
             `[polaris] tab.screenshot: width ${widthPx}px < ${MIN_VISION_WIDTH_PX}px — vision quality will degrade`,
           );

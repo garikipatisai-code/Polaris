@@ -375,6 +375,35 @@ describe('tab.list', () => {
 // ──────────────────────────────────────────────────────────────────────
 
 describe('tab.screenshot', () => {
+  let debuggerAttach: ReturnType<typeof vi.fn>;
+  let debuggerDetach: ReturnType<typeof vi.fn>;
+  let debuggerSendCommand: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    debuggerAttach = vi.fn().mockResolvedValue(undefined);
+    debuggerDetach = vi.fn().mockResolvedValue(undefined);
+    debuggerSendCommand = vi.fn().mockImplementation(
+      async (_target: unknown, method: string) => {
+        if (method === 'Page.captureScreenshot') {
+          // Strip the 'data:image/png;base64,' prefix and return raw base64
+          const raw = mock._state.captureDataUri;
+          const b64 = raw.startsWith('data:') ? raw.split(',')[1]! : raw;
+          return { data: b64 };
+        }
+        return {};
+      },
+    );
+    // Inject chrome.debugger mocks onto the existing chrome global
+    (globalThis as unknown as Record<string, unknown>).chrome = {
+      ...(globalThis as unknown as Record<string, unknown>).chrome,
+      debugger: {
+        attach: debuggerAttach,
+        detach: debuggerDetach,
+        sendCommand: debuggerSendCommand,
+      },
+    };
+  });
+
   it('parses PNG header dimensions (width=1600, height=900) from a known data URI', async () => {
     mock._state.captureDataUri = makeFakePngDataUri(1600, 900);
     const ctxA = { taskId: 'taskA', stepId: null };
@@ -401,8 +430,8 @@ describe('tab.screenshot', () => {
     expect(calls).toMatch(/width.*800/);
   });
 
-  it('rejects suspiciously small data URIs (<1000 chars) as non-fatal', async () => {
-    mock._state.captureDataUri = 'data:image/png;base64,iVBORw0KGgo='; // tiny stub
+  it('rejects tiny CDP screenshots (base64 < 1000 chars after prefix) as non-fatal', async () => {
+    mock._state.captureDataUri = makeFakePngDataUri(1, 1, 0); // smallest PNG: ~67 bytes base64
     const ctxA = { taskId: 'taskA', stepId: null };
     const opened = await tabOpenTool.execute({ url: 'https://example.com/' }, ctxA);
 
