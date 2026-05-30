@@ -1,0 +1,150 @@
+// OpenAI-format HTTP client for cloud LLM providers. Raw fetch(), no SDK.
+// Compatible with DeepSeek, OpenAI, and any OpenAI-compatible endpoint.
+
+import { log } from '../agent/log';
+
+export interface CloudMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface CloudChatOptions {
+  model: string;
+  messages: CloudMessage[];
+  apiKey: string;
+  baseUrl?: string;
+  temperature?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface CloudChatResponse {
+  id: string;
+  choices: { index: number; message: CloudMessage; finish_reason?: string }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+}
+
+export class CloudClient {
+  constructor(
+    public readonly baseUrl: string = 'https://api.deepseek.com/v1',
+    public readonly defaultApiKey: string = '',
+  ) {}
+
+  /**
+   * Non-streaming chat completion. Returns the full response in one shot.
+   * Compatible with any OpenAI-format endpoint (DeepSeek, OpenAI, etc.).
+   */
+  async chatOnce(opts: CloudChatOptions): Promise<CloudChatResponse> {
+    const url = `${opts.baseUrl ?? this.baseUrl}/chat/completions`;
+    const apiKey = opts.apiKey || this.defaultApiKey;
+
+    log('info', 'cloud', 'chatOnce ->', {
+      model: opts.model,
+      messages: opts.messages.length,
+      promptChars: opts.messages.reduce((a, m) => a + (m.content?.length ?? 0), 0),
+      maxTokens: opts.maxTokens ?? 4096,
+      temperature: opts.temperature ?? 0.7,
+    });
+    const start = performance.now();
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: opts.messages,
+        temperature: opts.temperature ?? 0.7,
+        max_tokens: opts.maxTokens ?? 4096,
+        stream: false,
+      }),
+      signal: opts.signal,
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      log('error', 'cloud', `chatOnce HTTP ${res.status}`, {
+        status: res.status,
+        detail: detail.slice(0, 200),
+        wallMs: Math.round(performance.now() - start),
+      });
+      throw new Error(`Cloud API HTTP ${res.status}: ${detail.slice(0, 200)}`);
+    }
+
+    const data = (await res.json()) as CloudChatResponse;
+    log('info', 'cloud', 'chatOnce OK', {
+      model: opts.model,
+      id: data.id,
+      finishReason: data.choices?.[0]?.finish_reason,
+      usage: data.usage,
+      wallMs: Math.round(performance.now() - start),
+    });
+    return data;
+  }
+
+  /**
+   * Streaming chat completion — yields content deltas via SSE parsing.
+   * Each yielded string is a single content delta from a chunk.
+   */
+  async *chatStream(opts: CloudChatOptions): AsyncGenerator<string, void, unknown> {
+    const url = `${opts.baseUrl ?? this.baseUrl}/chat/completions`;
+    const apiKey = opts.apiKey || this.defaultApiKey;
+
+    log('info', 'cloud', 'chatStream ->', {
+      model: opts.model,
+      messages: opts.messages.length,
+      maxTokens: opts.maxTokens ?? 4096,
+    });
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: opts.messages,
+        temperature: opts.temperature ?? 0.7,
+        max_tokens: opts.maxTokens ?? 4096,
+        stream: true,
+      }),
+      signal: opts.signal,
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`Cloud stream HTTP ${res.status}: ${detail.slice(0, 200)}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('Cloud stream: no response body');
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === 'data: [DONE]') continue;
+        if (!trimmed.startsWith('data: ')) continue;
+        try {
+          const parsed = JSON.parse(trimmed.slice(6));
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) yield content;
+        } catch {
+          // Skip malformed lines
+        }
+      }
+    }
+  }
+}

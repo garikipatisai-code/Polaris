@@ -12,6 +12,7 @@
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type LogCategory =
   | 'ollama'
+  | 'cloud'
   | 'agent'
   | 'planner'
   | 'executor'
