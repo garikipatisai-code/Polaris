@@ -88,7 +88,7 @@ in "Open questions" first.
 ## Current state — UPDATE THIS WHEN YOU FINISH WORK
 
 **Last touched:** 2026-05-31 (Mac, Opus 4.8 — Hybrid Delta wiring merged to main)
-**Last shipped:** **Hybrid Delta WIRING — COMPLETE + merged to `main` (`1a96e4a`, 24 commits).** The 2026-05-29 wave shipped cloud/PII/SoM as unwired (and partly broken) scaffolding; this made it real: all-local 3-tier model routing (Planner+Evaluator→`qwen3.6:35b-a3b`, Executor+Compactor→`qwen3.5:4b`; cloud BYOK opt-in/off-by-default) wired end-to-end via `buildProviders` + the `driveChatOnce` choke point; the double-broken cloud executor fixed (tools forwarded + tool_calls normalized); PII anonymize→deanonymize sandwich on cloud egress; page-action CDP path hardened; docs reconciled. **399 mock tests + 2 fast-tier integration passing; build clean.** Open gate: real-browser run of `scripts/browser_smoke_hybrid.py`.
+**Last shipped:** **Hybrid Delta WIRING — COMPLETE + merged to `main` (`1a96e4a`, 24 commits).** The 2026-05-29 wave shipped cloud/PII/SoM as unwired (and partly broken) scaffolding; this made it real: all-local 3-tier model routing (Planner+Evaluator→`qwen3.6:35b-a3b`, Executor+Compactor→`qwen3.5:4b`; cloud BYOK opt-in/off-by-default) wired end-to-end via `buildProviders` + the `driveChatOnce` choke point; the double-broken cloud executor fixed (tools forwarded + tool_calls normalized); PII anonymize→deanonymize sandwich on cloud egress; page-action CDP path hardened; docs reconciled. **399 mock tests + 2 fast-tier integration passing; build clean.** **Validated end-to-end on real hardware — `scripts/browser_smoke_hybrid.py` → 6/6 PASS on the Linux P2200 (Chrome 148): page actions (type/click/select) mutate a live page + DeepSeek cloud round-trip works** (commit `3a81602`). Pushed + synced (`main == origin/main`).
 **Current branch:** main (contains the merged wiring — **24 commits ahead of origin/main; push pending** since this Mac's sandbox blocks GitHub)
 
 - `probe.py` — capability probe verified on Linux box (38 tok/s, needle@128K passes, vision works ≥1200 px)
@@ -205,14 +205,14 @@ in "Open questions" first.
 - [x] **Reversible PII sandwich** — anonymize/deanonymize ✅ shipped
 - [x] **Wire cloud + 3-tier routing end-to-end** — `buildProviders` + `driveChatOnce`, cloud tool-calling fixed, PII sandwich on egress, auto-fallback, settings UI ✅ shipped (merged `1a96e4a`)
 - [x] **Page-action hardening** — DOM-init + scrollIntoView before quads ✅ shipped
-- [ ] **Push `main` to origin** — 24 commits ahead; this Mac's sandbox blocks GitHub, so the user pushes (then optionally delete the stale `origin/feat/hybrid-delta-wiring`@338c74b)
-- [ ] **Real-browser end-to-end validation** — run `scripts/browser_smoke_hybrid.py` on real Chrome (Linux box): does click/type/select actually mutate a live page? Optional cloud round-trip via `POLARIS_SMOKE_CLOUD=1` + `DEEPSEEK_API_KEY`. This is the one gate static tests can't settle.
+- [x] **Push `main` to origin** ✅ pushed + synced (`main == origin/main` @ `3a81602`).
+- [x] **Real-browser end-to-end validation** ✅ **6/6 PASS on Linux P2200 / Chrome 148** (commit `3a81602`): `tab.type`/`tab.click`/`tab.select` mutate a live page + the DeepSeek cloud round-trip works. The harness needed 3 Chrome-148 portability fixes (Linux Chrome path, `Target.createTarget` over WS instead of the 405-ing `/json/new`, dropped `--silent-launch`). **The "do click/type actually work on a real page?" gate is closed.**
 - [ ] **(optional) 35B-vs-4B reasoning quality A/B** — the Linux run measured latency/reliability, not plan/verdict quality; defaults are per-role-reversible in the UI
 - [ ] **(deferred) AXTree + SoM fusion** — coordinate-space alignment between ARIA `backendDOMNodeId` and content-script bounding boxes (`som.ts` stays dead until then)
 
 ### Open questions / blockers
 
-- **None blocking.** The wiring is merged, 399 mock tests green, build clean, and the final whole-implementation review verified both critical paths (cloud Executor tool-call round-trip; all-local default routing) end-to-end. The only open item is empirical: the real-browser page-action run (above) — a validation gate, not a code blocker.
+- **None.** The wiring is merged + pushed (`main == origin/main` @ `3a81602`), 399 mock tests green, build clean, the final whole-implementation review verified both critical paths (cloud Executor tool-call round-trip; all-local default routing) end-to-end, and the **real-browser gate is closed** (6/6 PASS on Linux Chrome 148). Hybrid Delta is validated end-to-end on real hardware.
 
 ### Acknowledged debt (Tier C from the arch-nemesis pass)
 
@@ -393,14 +393,9 @@ to decide budgets, not the 262 K theoretical context.
    and `docs/superpowers/plans/2026-05-31-hybrid-delta-wiring.md`. The model-
    distribution decision + Linux verification are in `extension/docs/model-distribution-verification.md`.
 
-**The two open items (both for the human, sandbox-blocked from Mac):**
-1. **Push** `main` to origin (24 commits ahead). Optionally delete the stale
-   `origin/feat/hybrid-delta-wiring`@338c74b afterward.
-2. **Real-browser run:** on the Linux box, `cd extension && npm run build &&
-   python3 ../scripts/browser_smoke_hybrid.py` — confirms click/type/select
-   mutate a live page. Optional cloud round-trip: `POLARIS_SMOKE_CLOUD=1`
-   `DEEPSEEK_API_KEY=…`. For the dual-model 35B setup, see README's
-   "Dual-model Ollama setup" section.
+**Both prior open items are DONE:**
+1. ✅ **Pushed** — `main == origin/main` @ `3a81602`. (Stale `origin/feat/hybrid-delta-wiring`@338c74b can still be deleted if you want tidiness.)
+2. ✅ **Real-browser run** — 6/6 PASS on the Linux P2200 / Chrome 148 (`3a81602`): page actions + DeepSeek cloud round-trip. The harness now auto-detects the Linux Chrome path and uses `Target.createTarget` (Chrome 148+ compatible). Re-run with `cd extension && npm run build && python3 ../scripts/browser_smoke_hybrid.py` (cloud check: `POLARIS_SMOKE_CLOUD=1` + `DEEPSEEK_API_KEY`).
 
 **Deferred (not started):** Phase 3b AXTree↔SoM fusion. Non-blocking review
 follow-ups: `resetAnonymizeCounters()` isn't called in prod (cosmetic);
