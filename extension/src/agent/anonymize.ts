@@ -50,8 +50,10 @@ export function anonymize(text: string): AnonymizeResult {
     seen.add(item.match);
     const id = nextId(item.kind);
     const placeholder = `<${item.kind}_${id}>`;
-    // Replace only the first occurrence (others of the same value handled via `seen`)
-    result = result.replace(item.match, placeholder);
+    // Replace ALL occurrences of this exact value. `.replace(string, ...)` only
+    // hits the first match — split/join is a literal replace-all (no regex
+    // escaping needed) so a repeated PII value can't leak its 2nd copy.
+    result = result.split(item.match).join(placeholder);
     map[placeholder] = item.match;
   }
   return { text: result, map };

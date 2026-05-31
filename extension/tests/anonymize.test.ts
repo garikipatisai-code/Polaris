@@ -55,4 +55,12 @@ describe('anonymize + deanonymize round-trip', () => {
     expect(anonymize('').map).toEqual({});
     expect(deanonymize('', {})).toBe('');
   });
+
+  it('replaces BOTH copies of repeated PII (no cleartext leak)', () => {
+    const { text } = anonymize('x@y.com is same as x@y.com');
+    // The literal email must not survive anywhere in the anonymized text.
+    expect(text).not.toContain('x@y.com');
+    // Both positions collapse to the same single placeholder.
+    expect(text).toBe('<EMAIL_1> is same as <EMAIL_1>');
+  });
 });
