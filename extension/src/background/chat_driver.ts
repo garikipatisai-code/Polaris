@@ -8,7 +8,7 @@ import type { OllamaClient, ChatMessage, ToolDef } from './ollama';
 import { wasTimeout } from './ollama';
 import { CloudClient } from './cloud_client';
 import type { CloudMessage } from './cloud_client';
-import { anonymize } from '../agent/anonymize';
+import { anonymize, containsPlaceholders } from '../agent/anonymize';
 import { deanonymize } from '../agent/deanonymize';
 import { log } from '../agent/log';
 
@@ -96,6 +96,8 @@ export async function driveChatOnce(
   fallback?: DriveProvider,
 ): Promise<DriveResult> {
   if (!(primary.client instanceof CloudClient)) {
+    // Narrowed by the instanceof CloudClient guard above; AnyClient = OllamaClient | CloudClient.
+    // If a third client variant is added, update this dispatch.
     const resp = await (primary.client as OllamaClient).chatOnce({
       model: primary.model,
       messages: opts.messages,
@@ -119,11 +121,13 @@ export async function driveChatOnce(
       return { role, content: text };
     });
 
+    // deanonymize in place — normalizeCloudResponse below reads from raw.choices
     const raw = await cloud.chatOnce({
       model: primary.model,
       messages: cloudMessages,
-      apiKey: '',
+      // apiKey omitted — CloudClient uses its constructed defaultApiKey.
       tools: opts.tools,
+      // cloud only maps 'json'; a schema-object format is not forwarded to cloud response_format
       responseFormatJson: opts.format === 'json',
       signal: opts.signal,
       timeoutMs: primary.timeoutMs,
@@ -136,6 +140,15 @@ export async function driveChatOnce(
         for (const tc of respMsg.tool_calls) {
           tc.function.arguments = deanonymize(tc.function.arguments, map);
         }
+      }
+      // A surviving <KIND_N> means the model emitted a placeholder not in our
+      // map (hallucinated or mismatched) — it would reach the tool dispatcher
+      // as a literal placeholder string. Surface it rather than fail silently.
+      const leaked =
+        (respMsg.content && containsPlaceholders(respMsg.content)) ||
+        (respMsg.tool_calls ?? []).some((tc) => containsPlaceholders(tc.function.arguments));
+      if (leaked) {
+        log('warn', 'cloud', 'response still contains placeholders after deanonymize (model hallucinated a placeholder?)');
       }
     }
     const normalized = normalizeCloudResponse(raw);

@@ -17,7 +17,7 @@ export interface CloudMessage {
 export interface CloudChatOptions {
   model: string;
   messages: CloudMessage[];
-  apiKey: string;
+  apiKey?: string;
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
