@@ -28,6 +28,8 @@ describe('CloudClient', () => {
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.model).toBe('deepseek-chat');
     expect(body.stream).toBe(false);
+    expect(body.tools).toBeUndefined();
+    expect(body.response_format).toBeUndefined();
   });
 
   it('chatOnce includes auth header', async () => {

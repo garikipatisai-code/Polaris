@@ -83,8 +83,13 @@ export class CloudClient {
       });
     } catch (e) {
       composed.cleanup();
-      // wasTimeout covers the direct-throw case; the second check covers mocks
-      // that throw AbortError without setting .cause (signal.reason is always set).
+      // Timeout classification: wasTimeout(e) catches the standard case where
+      // fetch throws an AbortError whose .cause is the timeout DOMException.
+      // The second clause catches environments (test mocks, some runtimes)
+      // that throw a bare AbortError without .cause — composeSignal always
+      // aborts with the timeout DOMException, so composed.signal.reason is
+      // authoritative when the timer fired. Neither clause fires for a user
+      // abort (reason is the user's) or a network error (signal not aborted).
       const isTimeout = wasTimeout(e) ||
         (composed.signal.aborted && wasTimeout(composed.signal.reason));
       if (isTimeout) {
