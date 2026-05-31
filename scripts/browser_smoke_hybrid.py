@@ -31,7 +31,8 @@ SCOPE NOTE:
   drives it against a real Chrome tab.  This is a direct test of the protocol
   mechanics — if these CDP calls work, the extension's wrappers around them will
   too.  End-to-end extension → tab wiring requires manual / browser-based
-  testing (see docs/linux-validation.md session 2 tasks).
+  testing on a real Chrome (run this harness on the Linux box; see README's
+  "Dual-model Ollama setup" for the local-model config).
 
 Stdlib only (matches browser_smoke.py dependency baseline).
 """

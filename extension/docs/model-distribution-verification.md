@@ -107,7 +107,7 @@ curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; t=[m['nam
 # 2) Current Ollama env (RECORD THIS — you restore to it in Step 5)
 systemctl show ollama --property=Environment
 echo "$OLLAMA_MAX_LOADED_MODELS  $OLLAMA_NUM_PARALLEL  $OLLAMA_KEEP_ALIVE  $OLLAMA_KV_CACHE_TYPE"
-#   Note Gap #4 from linux-validation.md: OLLAMA_ORIGINS may be empty here — irrelevant for this run (no browser).
+#   Note: OLLAMA_ORIGINS may be empty here — irrelevant for this run (no browser).
 ```
 
 ---

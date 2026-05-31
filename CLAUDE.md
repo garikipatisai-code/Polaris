@@ -87,9 +87,9 @@ in "Open questions" first.
 
 ## Current state — UPDATE THIS WHEN YOU FINISH WORK
 
-**Last touched:** 2026-05-29 (Mac, DeepSeek V4-Flash)
-**Last shipped:** Hybrid delta implementation — 4 of 6 phases delivered: vision.ground tool, page-action tools (click/type/select), OpenAI-format CloudClient + per-role provider routing, executor/evaluator cloud routing via AnyClient; SoM content script; reversible PII anonymize/deanonymize (376 mock tests + 2 fast-tier integration passing)
-**Current branch:** main
+**Last touched:** 2026-05-31 (Mac, Opus 4.8 — Hybrid Delta wiring merged to main)
+**Last shipped:** **Hybrid Delta WIRING — COMPLETE + merged to `main` (`1a96e4a`, 24 commits).** The 2026-05-29 wave shipped cloud/PII/SoM as unwired (and partly broken) scaffolding; this made it real: all-local 3-tier model routing (Planner+Evaluator→`qwen3.6:35b-a3b`, Executor+Compactor→`qwen3.5:4b`; cloud BYOK opt-in/off-by-default) wired end-to-end via `buildProviders` + the `driveChatOnce` choke point; the double-broken cloud executor fixed (tools forwarded + tool_calls normalized); PII anonymize→deanonymize sandwich on cloud egress; page-action CDP path hardened; docs reconciled. **399 mock tests + 2 fast-tier integration passing; build clean.** Open gate: real-browser run of `scripts/browser_smoke_hybrid.py`.
+**Current branch:** main (contains the merged wiring — **24 commits ahead of origin/main; push pending** since this Mac's sandbox blocks GitHub)
 
 - `probe.py` — capability probe verified on Linux box (38 tok/s, needle@128K passes, vision works ≥1200 px)
 - `extension/` — full agent stack:
@@ -175,7 +175,7 @@ in "Open questions" first.
     - **Polish #1 — CollapsibleText for inline events:** `breaker`, `verdict`, and `error` timeline events now use `<CollapsibleText inline cap={120}>`. Long reasons collapse with a "Show full (N chars)" toggle instead of the prior wall-of-text dump when the model produced multi-KB error/breaker reasons.
     - **Polish #2 — per-op metrics block:** small latency table (`op | n | ok | p50 | p95 | mean`, sorted by mean desc) renders below a terminal agent run. Same data as `polaris.metrics.summary(taskId)` from the SW console — but visible without DevTools. Added `metrics.get` / `metrics.value` to the panel↔SW protocol; SW handler delegates to `metrics.summary(taskId)`.
     - **Polish #3 — domain tier settings UI:** settings drawer gained a "Domain trust tiers" section. Lists configured hosts with per-row tier dropdown (`read-only` / `click-only` / `full-action`) + remove button; an Add row at the bottom takes a host (or pasted URL — `https://www.target.com/foo` normalizes to `target.com`) + tier dropdown. Backed by `chrome.storage.local['polaris.domain_tiers']` via new `domainTiers.list` / `domainTiers.set` messages. Lazy-fetched on drawer open.
-    - **Bundle:** panel 158 → 162 KB, SW 162 → 164 KB (+4 KB each). Tests still 333/333 — these are panel + protocol additions; no new backend logic to test in unit form. Browser verification queued for the next Linux session in `extension/docs/linux-validation.md` "Session 2 task" — Mac sandbox blocks Chrome socket binding so this is the natural place to do it.
+    - **Bundle:** panel 158 → 162 KB, SW 162 → 164 KB (+4 KB each). Tests still 333/333 — these are panel + protocol additions; no new backend logic to test in unit form. (Browser verification was queued in the old `extension/docs/linux-validation.md` runbook, **since removed** — superseded by the 2026-05-31 wiring's `scripts/browser_smoke_hybrid.py`.)
   - **Hybrid delta (NEW, 2026-05-29):** 13 commits, 6 phases implementing the gap between `docs/architecture-delta.md` and the codebase:
     - **Phase 3a: vision.ground tool** — `createVisionGroundTool` factory (client+model binding), 1200px minimum width guard (non-fatal BrowserToolError), PNG data-URI regex validation, Ollama vision call via `images` field. Registered in orchestrator at construction. (+7 tests)
     - **Phase 5: Page-action tools** — `tab.click`, `tab.type`, `tab.select` via CDP (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Runtime.evaluate`). Domain tier gating (`assertCanAct`). Element resolution via `backendDOMNodeId` (preferred) or CSS selector fallback. proper debugger attach/detach lifecycle. tab.type uses `Runtime.evaluate` for multi-char field clearing. (+19 tests)
@@ -184,22 +184,35 @@ in "Open questions" first.
     - **Phase 3b: Set-of-Marks content script** — `src/content/som.ts` injects numbered overlay over interactive elements. Messaging: `som.generate` → marker map, `som.clear` → remove. Registered in manifest via `content_scripts`. (+0 tests)
     - **Phase 4: Reversible PII redaction** — `src/agent/anonymize.ts` replaces PII with `<KIND_N>` placeholders + mapping table; `deanonymize.ts` restores originals; `reanonymize.ts` re-applies. Additive to existing irreversible `redact.ts`. (+8 tests)
     - **Total at end of session: 376 mock tests passing.** 13 commits ahead of origin/main.
+  - **Hybrid Delta WIRING (NEW, 2026-05-31 — merged `main` @ `1a96e4a`):** the 2026-05-29 wave above shipped cloud/PII as unwired + double-broken scaffolding; this closed the gap, via subagent-driven TDD (14 tasks, per-task spec+quality review + a final whole-implementation review):
+    - **Model distribution (locked, spec §10):** all-local default — Planner+Evaluator→`qwen3.6:35b-a3b`, Executor+Compactor→`qwen3.5:4b`; cloud BYOK opt-in/off-by-default (full functionality with zero cloud config). `Settings.roleModels` + locked `DEFAULT_SETTINGS`; `buildProviders` (precedence cloud→35B-local→4B-default) resolved at both `service_worker.ts` Orchestrator sites; pre-flight validates every configured local model is pulled. 35B roles get `num_predict≥2048` + raised per-role timeout (Planner 25 min / Evaluator 12 min) — both empirically required (`extension/docs/model-distribution-verification.md`, Linux 2026-05-31).
+    - **Cloud path fixed + wired:** `driveChatOnce` choke point in `chat_driver.ts` (dispatch via `instanceof CloudClient`; PII anonymize→deanonymize sandwich, fail-closed on egress; cloud→local auto-fallback on error/timeout but not user-abort). `CloudClient` now forwards `tools` + `response_format` + honors `timeoutMs` (via extracted `background/signal.ts`); `normalizeCloudResponse` maps `tool_calls` (JSON.parse's the arg string). Roles call `driveChatOnce`; orchestrator threads per-role timeout/numPredict + builds the fallback for cloud roles. Compactor + vision.ground stay local.
+    - **Page actions hardened:** `actions.ts` hoists `DOM.getDocument` (both resolution paths) + adds `DOM.scrollIntoViewIfNeeded` before `getContentQuads` — fixes the likely real-Chrome `backendDOMNodeId` failure + below-the-fold mis-click.
+    - **PII:** `anonymize` first-occurrence-only `.replace` → split/join replace-all (was leaking the 2nd copy of repeated PII).
+    - **Settings UI:** per-role "Model source" selector (Default 4B / Local 35B / Cloud BYOK).
+    - **Docs:** Convention #6 + README reconciled (local-first; domain-tier-gated actions; privacy claim); qwen3.5 probe restored, qwen3.6 run kept as `probe_results_qwen36.*`.
+    - **Harness:** `scripts/browser_smoke_hybrid.py` (the real-browser page-action capability gate).
+    - **Refuted by Linux verification → intentionally NOT built:** the research-proposed client-side XML tool-call fallback parser (Hermes-JSON↔XML mismatch did NOT reproduce on Ollama 0.22.1 — 10/10 clean tool calls) and mandatory model pinning (swap-thrash refuted; both models coexist 4B=VRAM/35B=CPU-RAM). SoM↔AXTree fusion stays deferred (`som.ts` still dead).
+    - **399 mock tests + 2 fast-tier integration passing; build clean.** Quality of 35B-vs-4B reasoning was NOT measured (only latency/reliability) — defaults are per-role-reversible via the UI; an A/B is a follow-up.
 - `docs/research-notes.md` — literature survey
 
 ### What's next
 
 - [x] **vision.ground tool** — factory + orchestrator registration ✅ shipped
 - [x] **Page-action tools (click/type/select)** — CDP + domain tiers ✅ shipped
-- [x] **Cloud client + per-role routing** — OpenAI-format, raw fetch ✅ shipped  
+- [x] **Cloud client + per-role routing** — OpenAI-format, raw fetch ✅ shipped
 - [x] **SoM content script** — numbered overlay + manifest entry ✅ shipped
 - [x] **Reversible PII sandwich** — anonymize/deanonymize ✅ shipped
-- [ ] **Real-browser end-to-end validation** — test the new CDP tools (click/type/select) against real pages on Linux
-- [ ] **DeepSeek V4-Flash cloud executor** — wire actual DeepSeek API key + fallback into CloudClient
-- [ ] **AXTree + SoM fusion** — coordinate-space alignment between ARIA backendDOMNodeId and content-script bounding boxes
+- [x] **Wire cloud + 3-tier routing end-to-end** — `buildProviders` + `driveChatOnce`, cloud tool-calling fixed, PII sandwich on egress, auto-fallback, settings UI ✅ shipped (merged `1a96e4a`)
+- [x] **Page-action hardening** — DOM-init + scrollIntoView before quads ✅ shipped
+- [ ] **Push `main` to origin** — 24 commits ahead; this Mac's sandbox blocks GitHub, so the user pushes (then optionally delete the stale `origin/feat/hybrid-delta-wiring`@338c74b)
+- [ ] **Real-browser end-to-end validation** — run `scripts/browser_smoke_hybrid.py` on real Chrome (Linux box): does click/type/select actually mutate a live page? Optional cloud round-trip via `POLARIS_SMOKE_CLOUD=1` + `DEEPSEEK_API_KEY`. This is the one gate static tests can't settle.
+- [ ] **(optional) 35B-vs-4B reasoning quality A/B** — the Linux run measured latency/reliability, not plan/verdict quality; defaults are per-role-reversible in the UI
+- [ ] **(deferred) AXTree + SoM fusion** — coordinate-space alignment between ARIA `backendDOMNodeId` and content-script bounding boxes (`som.ts` stays dead until then)
 
 ### Open questions / blockers
 
-- None blocking M3. The agent loop is provably correct on its core invariants (goal survival, replan cap, step advance) via the test suite. M3 work proceeds against a stable foundation.
+- **None blocking.** The wiring is merged, 399 mock tests green, build clean, and the final whole-implementation review verified both critical paths (cloud Executor tool-call round-trip; all-local default routing) end-to-end. The only open item is empirical: the real-browser page-action run (above) — a validation gate, not a code blocker.
 
 ### Acknowledged debt (Tier C from the arch-nemesis pass)
 
@@ -245,10 +258,10 @@ cd extension && npm install && npm run build
 python3 scripts/browser_smoke.py
 ```
 
-### Open questions / blockers (remaining phases 2 items)
+### Open questions / blockers (remaining deferred items)
 
-- Phase 2 DeepSeek V4-Flash integration needs API key management in settings UI and auto-fallback wiring
-- Phase 3b AXTree+SoM fusion needs coordinate-space alignment and dual-channel verification pipeline
+- ~~Phase 2 DeepSeek V4-Flash integration needs API key management in settings UI and auto-fallback wiring~~ ✅ **Done 2026-05-31** — per-role "Model source" UI (incl. cloud baseUrl/apiKey/model) + `driveChatOnce` auto-fallback to local on cloud error/timeout.
+- **Phase 3b AXTree+SoM fusion** still deferred — needs coordinate-space alignment between ARIA `backendDOMNodeId` and `som.ts` content-script bounding boxes + a dual-channel verification pipeline. `som.ts` ships but has no consumer until this lands.
 
 ---
 
@@ -373,17 +386,27 @@ to decide budgets, not the 262 K theoretical context.
 
 **If you're starting fresh on this repo:**
 1. Run `python3 probe.py` once on the Linux box to confirm Ollama is up
-   and the model is responsive.
-2. Check `## Current state` for what's been shipped.
-3. The delta plan at `docs/superpowers/plans/2026-05-29-hybrid-delta-implementation.md`
-   has the remaining Phase 2 items (DeepSeek cloud executor) and Phase 3b (AXTree+SoM fusion).
+   and the models are responsive (both `qwen3.5:4b` and `qwen3.6:35b-a3b`).
+2. Check `## Current state` for what's been shipped (Hybrid Delta wiring is
+   merged to `main` @ `1a96e4a`).
+3. The wiring spec + plan are `docs/superpowers/specs/2026-05-30-hybrid-delta-wiring-design.md`
+   and `docs/superpowers/plans/2026-05-31-hybrid-delta-wiring.md`. The model-
+   distribution decision + Linux verification are in `extension/docs/model-distribution-verification.md`.
 
-**If you're picking up the remaining hybrid delta phases:**
-- Phase 2 DeepSeek integration: wire real DeepSeek API into CloudClient, add auto-fallback
-  to local Ollama on cloud failure. API key management in chrome.storage.local.
-- Phase 3b fusion: align ARIA tree `backendDOMNodeId` with SoM content-script bounding boxes.
-  vision.ground verification pipeline.
-- Test suite baseline: `cd extension && npm test` → 376 tests.
+**The two open items (both for the human, sandbox-blocked from Mac):**
+1. **Push** `main` to origin (24 commits ahead). Optionally delete the stale
+   `origin/feat/hybrid-delta-wiring`@338c74b afterward.
+2. **Real-browser run:** on the Linux box, `cd extension && npm run build &&
+   python3 ../scripts/browser_smoke_hybrid.py` — confirms click/type/select
+   mutate a live page. Optional cloud round-trip: `POLARIS_SMOKE_CLOUD=1`
+   `DEEPSEEK_API_KEY=…`. For the dual-model 35B setup, see README's
+   "Dual-model Ollama setup" section.
+
+**Deferred (not started):** Phase 3b AXTree↔SoM fusion. Non-blocking review
+follow-ups: `resetAnonymizeCounters()` isn't called in prod (cosmetic);
+`CloudClient.chatStream` isn't timeout-hardened (off the agent path).
+
+- Test suite baseline: `cd extension && npm test` → **399 tests**.
 
 **Before you sign off, update:**
 - `## Current state` with what you changed
