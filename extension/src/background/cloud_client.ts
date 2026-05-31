@@ -2,10 +2,16 @@
 // Compatible with DeepSeek, OpenAI, and any OpenAI-compatible endpoint.
 
 import { log } from '../agent/log';
+import { composeSignal, wasTimeout } from './signal';
+import type { ToolDef } from './ollama';
+
+/** Cloud calls are fast (hosted API); 60s covers a slow tool-calling completion. */
+export const DEFAULT_CLOUD_TIMEOUT_MS = 60_000;
 
 export interface CloudMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  tool_calls?: { id?: string; type?: string; function: { name: string; arguments: string } }[];
 }
 
 export interface CloudChatOptions {
@@ -17,6 +23,10 @@ export interface CloudChatOptions {
   maxTokens?: number;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Forwarded as OpenAI `tools`. Our ToolDef IS the OpenAI tools shape. */
+  tools?: ToolDef[];
+  /** When true, sets response_format:{type:'json_object'}. */
+  responseFormatJson?: boolean;
 }
 
 export interface CloudChatResponse {
@@ -48,41 +58,66 @@ export class CloudClient {
     });
     const start = performance.now();
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: opts.model,
-        messages: opts.messages,
-        temperature: opts.temperature ?? 0.7,
-        max_tokens: opts.maxTokens ?? 4096,
-        stream: false,
-      }),
-      signal: opts.signal,
-    });
+    const body: Record<string, unknown> = {
+      model: opts.model,
+      messages: opts.messages,
+      temperature: opts.temperature ?? 0.7,
+      max_tokens: opts.maxTokens ?? 4096,
+      stream: false,
+    };
+    if (opts.tools && opts.tools.length) body.tools = opts.tools;
+    if (opts.responseFormatJson) body.response_format = { type: 'json_object' };
 
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '');
-      log('error', 'cloud', `chatOnce HTTP ${res.status}`, {
-        status: res.status,
-        detail: detail.slice(0, 200),
-        wallMs: Math.round(performance.now() - start),
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_CLOUD_TIMEOUT_MS;
+    const composed = composeSignal(opts.signal, timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: composed.signal,
       });
-      throw new Error(`Cloud API HTTP ${res.status}: ${detail.slice(0, 200)}`);
+    } catch (e) {
+      composed.cleanup();
+      // wasTimeout covers the direct-throw case; the second check covers mocks
+      // that throw AbortError without setting .cause (signal.reason is always set).
+      const isTimeout = wasTimeout(e) ||
+        (composed.signal.aborted && wasTimeout(composed.signal.reason));
+      if (isTimeout) {
+        const tErr = new Error(`Cloud chat timed out after ${timeoutMs}ms`);
+        tErr.name = 'TimeoutError';
+        throw tErr;
+      }
+      throw e;
     }
 
-    const data = (await res.json()) as CloudChatResponse;
-    log('info', 'cloud', 'chatOnce OK', {
-      model: opts.model,
-      id: data.id,
-      finishReason: data.choices?.[0]?.finish_reason,
-      usage: data.usage,
-      wallMs: Math.round(performance.now() - start),
-    });
-    return data;
+    try {
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        log('error', 'cloud', `chatOnce HTTP ${res.status}`, {
+          status: res.status,
+          detail: detail.slice(0, 200),
+          wallMs: Math.round(performance.now() - start),
+        });
+        throw new Error(`Cloud API HTTP ${res.status}: ${detail.slice(0, 200)}`);
+      }
+
+      const data = (await res.json()) as CloudChatResponse;
+      log('info', 'cloud', 'chatOnce OK', {
+        model: opts.model,
+        id: data.id,
+        finishReason: data.choices?.[0]?.finish_reason,
+        usage: data.usage,
+        wallMs: Math.round(performance.now() - start),
+      });
+      return data;
+    } finally {
+      composed.cleanup();
+    }
   }
 
   /**
