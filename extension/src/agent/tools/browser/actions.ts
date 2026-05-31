@@ -336,14 +336,24 @@ export const tabSelectTool: ToolHandler<z.infer<typeof tabSelectArgs>, z.infer<t
 /**
  * Resolve an element to viewport coordinates via CDP.
  *
- * Two resolution paths:
- *   1. backendDOMNodeId (preferred) — uses DOM.resolveNode + DOM.requestNode
- *   2. CSS selector (fallback) — uses DOM.getDocument + DOM.querySelector
+ * Called only by tab.click, so all error messages are prefixed 'tab.click:'.
  *
- * Both paths yield a DOM nodeId which is passed to DOM.getContentQuads to
- * get the element's bounding box in viewport coordinates. The click center
- * is computed as the element origin plus either the explicit offset or
- * half the element's width/height.
+ * DOM.getDocument is always called first to initialise the DOM agent for this
+ * debugger session; without it, DOM.requestNode and DOM.querySelector both fail
+ * with "Could not find node with given id" on a real page.
+ *
+ * Two resolution paths (both share the document node from getDocument):
+ *   1. backendDOMNodeId (preferred) — DOM.resolveNode + DOM.requestNode
+ *   2. CSS selector (fallback) — DOM.querySelector against the document node
+ *
+ * After obtaining a nodeId, DOM.scrollIntoViewIfNeeded runs before
+ * DOM.getContentQuads so that off-screen elements are scrolled into the
+ * viewport; getContentQuads returns viewport-relative coordinates, so a
+ * below-fold element would otherwise yield a quad the mouse event misses.
+ * scrollIntoViewIfNeeded is best-effort and failures are swallowed.
+ *
+ * The click center is the element origin plus either the explicit offset or
+ * half the element's width/height (Math.floor).
  */
 async function resolveElementCoords(
   tabId: number,

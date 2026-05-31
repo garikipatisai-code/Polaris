@@ -207,6 +207,10 @@ describe('tab.click', () => {
     expect(docIdx).toBeGreaterThanOrEqual(0);
     expect(reqIdx).toBeGreaterThanOrEqual(0);
     expect(docIdx).toBeLessThan(reqIdx);
+    // Also assert getDocument precedes resolveNode so the assertion can't be
+    // satisfied by getDocument landing between resolveNode and requestNode.
+    const resolveIdx = order.indexOf('DOM.resolveNode');
+    expect(docIdx).toBeLessThan(resolveIdx);
   });
 
   it('calls DOM.scrollIntoViewIfNeeded before DOM.getContentQuads', async () => {
@@ -220,6 +224,25 @@ describe('tab.click', () => {
     expect(scrollIdx).toBeGreaterThanOrEqual(0);
     expect(quadsIdx).toBeGreaterThanOrEqual(0);
     expect(scrollIdx).toBeLessThan(quadsIdx);
+  });
+
+  it('orders DOM.getDocument before querySelector and scroll before quads on the selector path', async () => {
+    mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      if (method === 'DOM.querySelector') return { nodeId: 202 };
+      if (method === 'DOM.scrollIntoViewIfNeeded') return {};
+      if (method === 'DOM.getContentQuads') return { quads: [[30, 40, 200, 40, 200, 100, 30, 100]] };
+      if (method === 'Input.dispatchMouseEvent') return {};
+      return {};
+    });
+    await tabClickTool.execute(
+      { tabId: 42, selector: '#submit-btn' },
+      { taskId: 't1', stepId: null },
+    );
+    const order = mockSendCommand.mock.calls.map((c: unknown[]) => (c as [unknown, string])[1]);
+    expect(order.indexOf('DOM.getDocument')).toBeLessThan(order.indexOf('DOM.querySelector'));
+    expect(order.indexOf('DOM.scrollIntoViewIfNeeded')).toBeLessThan(order.indexOf('DOM.getContentQuads'));
+    expect(order.indexOf('DOM.getDocument')).toBeGreaterThanOrEqual(0);
   });
 });
 
