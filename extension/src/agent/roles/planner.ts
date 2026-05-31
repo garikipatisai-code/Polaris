@@ -9,7 +9,7 @@
 // driven by Plan quality.
 
 import { z } from 'zod';
-import type { AnyClient } from '../../background/chat_driver';
+import type { AnyClient, DriveProvider } from '../../background/chat_driver';
 import { driveChatOnce } from '../../background/chat_driver';
 import type { ToolRegistry } from '../tools';
 import type { AgentStateHot, Plan, PlanStep } from '../../shared/agent_types';
@@ -29,7 +29,7 @@ export interface PlannerInput {
   thinkingMode: boolean;
   timeoutMs?: number;
   numPredict?: number;
-  fallback?: import('../../background/chat_driver').DriveProvider;
+  fallback?: DriveProvider;
 }
 
 export interface PlannerOutput {

@@ -12,9 +12,7 @@
 // wraps in prose). One retry on parse failure.
 
 import { z } from 'zod';
-import type { OllamaClient } from '../../background/ollama';
-import type { CloudClient } from '../../background/cloud_client';
-import type { DriverResponse } from '../../background/chat_driver';
+import type { AnyClient, DriveProvider } from '../../background/chat_driver';
 import { driveChatOnce } from '../../background/chat_driver';
 import type { AgentStateHot } from '../../shared/agent_types';
 import { evaluatorSystemPrompt } from '../prompts/evaluator';
@@ -26,7 +24,7 @@ export type Verdict = 'done' | 'continue' | 'replan' | 'abort';
 
 export interface EvaluatorInput {
   state: AgentStateHot;
-  client: OllamaClient | CloudClient;
+  client: AnyClient;
   model: string;
   signal?: AbortSignal;
   thinkingMode: boolean;
@@ -34,7 +32,7 @@ export interface EvaluatorInput {
   triggeredByFinish: boolean;
   timeoutMs?: number;
   numPredict?: number;
-  fallback?: import('../../background/chat_driver').DriveProvider;
+  fallback?: DriveProvider;
 }
 
 export interface EvaluatorOutput {
@@ -90,7 +88,7 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
 
   const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict };
 
-  const firstResp: DriverResponse = await driveChatOnce(provider, {
+  const firstResp = await driveChatOnce(provider, {
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userAnchor },
@@ -130,7 +128,7 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
         content: '[previous output was unparseable JSON — produce the verdict JSON now]',
       };
     }
-    const retryResp: DriverResponse = await driveChatOnce(provider, {
+    const retryResp = await driveChatOnce(provider, {
       messages: retryMessages,
       format: 'json',
       think: false,

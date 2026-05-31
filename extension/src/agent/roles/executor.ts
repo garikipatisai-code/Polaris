@@ -8,9 +8,7 @@
 // Does NOT persist anything itself — returns a structured result that the
 // orchestrator turns into scratchpad entries + event log writes.
 
-import type { OllamaClient } from '../../background/ollama';
-import type { CloudClient } from '../../background/cloud_client';
-import type { DriverResponse } from '../../background/chat_driver';
+import type { AnyClient, DriveProvider } from '../../background/chat_driver';
 import { driveChatOnce } from '../../background/chat_driver';
 import type { ToolRegistry, ToolContext } from '../tools';
 import { SPECIAL_TOOLS } from '../tools';
@@ -24,12 +22,12 @@ import { log } from '../log';
 export interface ExecutorInput {
   state: AgentStateHot;
   registry: ToolRegistry;
-  client: OllamaClient | CloudClient;
+  client: AnyClient;
   model: string;
   signal?: AbortSignal;
   timeoutMs?: number;
   numPredict?: number;
-  fallback?: import('../../background/chat_driver').DriveProvider;
+  fallback?: DriveProvider;
 }
 
 export interface ExecutorOutput {
@@ -84,7 +82,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
   const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict };
 
   // First attempt
-  const first: DriverResponse = await driveChatOnce(provider, {
+  const first = await driveChatOnce(provider, {
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userAnchor },
@@ -124,7 +122,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
         content: '[previous output was unparseable — call exactly one tool now]',
       };
     }
-    const second: DriverResponse = await driveChatOnce(provider, {
+    const second = await driveChatOnce(provider, {
       messages: retryMessages,
       tools: toolDefs,
       think: false,
