@@ -389,6 +389,38 @@ export default function App() {
     send(portRef.current, { type: 'settings.set', settings: { [key]: value } as Partial<Settings> });
   }
 
+  type ModelSource = 'default' | 'local35b' | 'cloud';
+  const LOCAL_35B = 'qwen3.6:35b-a3b';
+
+  function roleSource(role: 'planner' | 'executor' | 'evaluator'): ModelSource {
+    if (settings.cloud?.[role]?.apiKey) return 'cloud';
+    if (settings.roleModels?.[role]) return 'local35b';
+    return 'default';
+  }
+
+  function setRoleSource(role: 'planner' | 'executor' | 'evaluator', source: ModelSource) {
+    const roleModels = { ...(settings.roleModels ?? {}) };
+    const cloud = { ...(settings.cloud ?? {}) };
+    if (source === 'local35b') {
+      roleModels[role] = LOCAL_35B;
+      delete cloud[role];
+    } else if (source === 'cloud') {
+      delete roleModels[role];
+      cloud[role] = cloud[role] ?? { baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' };
+    } else {
+      delete roleModels[role];
+      delete cloud[role];
+    }
+    send(null, { type: 'settings.set', settings: { roleModels, cloud } });
+  }
+
+  function updateCloudField(role: 'planner' | 'executor' | 'evaluator', field: 'baseUrl' | 'apiKey' | 'model', value: string) {
+    const cloud = { ...(settings.cloud ?? {}) };
+    const existing = cloud[role] ?? { baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' };
+    cloud[role] = { ...existing, [field]: value };
+    send(null, { type: 'settings.set', settings: { cloud } });
+  }
+
   function testConnection() {
     if (!portRef.current) return;
     setConnStatus('unknown');
@@ -604,6 +636,50 @@ export default function App() {
                 Add
               </button>
             </div>
+          </div>
+          <div className="drawer-section">
+            <div className="drawer-section-head">
+              <span className="drawer-section-label">Model source per role</span>
+              <span className="drawer-section-hint">
+                Default is fully local. <code>Local 35B</code> uses {LOCAL_35B} for higher-quality
+                reasoning (slower). <code>Cloud</code> sends PII-anonymized prompts to your own key.
+              </span>
+            </div>
+            {(['planner', 'executor', 'evaluator'] as const).map((role) => (
+              <div key={role} className="role-model-row">
+                <span className="role-model-label">{role}</span>
+                <select
+                  value={roleSource(role)}
+                  onChange={(e) => setRoleSource(role, e.target.value as ModelSource)}
+                >
+                  <option value="default">Default (4B)</option>
+                  <option value="local35b">Local 35B</option>
+                  <option value="cloud">Cloud (BYOK)</option>
+                </select>
+                {roleSource(role) === 'cloud' && (
+                  <div className="role-cloud-fields">
+                    <input
+                      type="text"
+                      placeholder="baseUrl"
+                      value={settings.cloud?.[role]?.baseUrl ?? ''}
+                      onChange={(e) => updateCloudField(role, 'baseUrl', e.target.value)}
+                    />
+                    <input
+                      type="password"
+                      placeholder="apiKey"
+                      value={settings.cloud?.[role]?.apiKey ?? ''}
+                      onChange={(e) => updateCloudField(role, 'apiKey', e.target.value)}
+                    />
+                    <input
+                      type="text"
+                      placeholder="model (e.g. deepseek-chat)"
+                      value={settings.cloud?.[role]?.model ?? ''}
+                      onChange={(e) => updateCloudField(role, 'model', e.target.value)}
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
           <div className="drawer-actions">
             <button className="danger" onClick={resetAgentState}>

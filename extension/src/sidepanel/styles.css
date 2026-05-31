@@ -759,3 +759,8 @@ button { font-family: inherit; }
   font-family: inherit;
 }
 .collapsible-toggle:hover { color: var(--accent); border-color: var(--accent); }
+
+.role-model-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; }
+.role-model-label { min-width: 72px; text-transform: capitalize; font-size: 12px; opacity: 0.85; }
+.role-cloud-fields { display: flex; flex-direction: column; gap: 4px; width: 100%; padding-left: 80px; }
+.role-cloud-fields input { width: 100%; }
