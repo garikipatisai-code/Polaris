@@ -1,0 +1,55 @@
+{
+  "model": "qwen3.6:35b-a3b",
+  "base_url": "http://localhost:11434",
+  "started_at": 1780121032.4690778,
+  "host": "Linux appusai-ThinkStation-P330 6.17.0-29-generic #29~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon May 11 10:30:58 UTC 2 x86_64 x86_64 x86_64 GNU/Linux",
+  "tests": {
+    "chat_latency": {
+      "samples": [
+        {
+          "ok": true,
+          "wall": 1.03,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 11.19,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 1.04,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 11.72,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 1.0,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 11.79,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 1.01,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 10.74,
+          "content": "pong"
+        },
+        {
+          "ok": true,
+          "wall": 1.0,
+          "prompt_tokens": 19,
+          "gen_tokens": 2,
+          "tok_per_sec": 11.1,
+          "content": "pong"
+        }
+      ],
+      "avg_tps": 11.31
+    }
+  },
+  "finished_at": 1780121037.5633245,
+  "wall_total_s": 5.1
+}

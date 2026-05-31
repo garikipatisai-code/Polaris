@@ -6,7 +6,10 @@ A goal-anchored agentic browser extension for Chrome, powered by a local Qwen3.5
 
 ## What this is
 
-Polaris gives Chrome a Perplexity-Comet-style AI agent that runs **entirely on your own machine**. No browsing data leaves your computer. The agent autonomously opens tabs, reads pages, and synthesizes results in pursuit of a goal you specify.
+Polaris runs fully locally by default — no browsing data leaves your machine.
+You can optionally enable per-role cloud routing (bring your own API key); when
+you do, only PII-anonymized prompts are sent to your configured provider, and
+everything else stays local. The agent autonomously opens tabs, reads pages, and synthesizes results in pursuit of a goal you specify.
 
 The architectural distinction: a hierarchical **Planner / Executor / Evaluator** loop with persistent state outside the model context, so the agent stays locked on your original goal even when its working context fills up mid-task.
 
@@ -140,15 +143,32 @@ npm run test:integration:full
 
 Override the URL or model via env vars: `OLLAMA_URL=http://192.168.1.50:11434 OLLAMA_MODEL=qwen3.5:4b npm run test:integration:full`.
 
+## Dual-model Ollama setup (local 35B reasoning)
+
+Polaris's default routes Planner/Evaluator to `qwen3.6:35b-a3b` and
+Executor/Compactor to `qwen3.5:4b`, with both models resident at once. On the
+reference box (5 GB VRAM + 32 GB RAM) the verified config is:
+
+    OLLAMA_MAX_LOADED_MODELS=2
+    OLLAMA_KEEP_ALIVE=-1
+    OLLAMA_KV_CACHE_TYPE=q8_0
+
+Pin the 35B to CPU (it doesn't fit 5 GB VRAM) via a Modelfile (`PARAMETER
+num_gpu 0`); keep the 4B GPU-resident. Pull both: `ollama pull qwen3.5:4b` and
+`ollama pull qwen3.6:35b-a3b` (~23 GB — put it on fast storage). Footprint is
+tight (~29/31 GB RAM, ~4.4/5 GB VRAM) but stable. If the browser needs CORS,
+re-add `OLLAMA_ORIGINS=chrome-extension://*` (a `systemctl revert` wipes it).
+
 ## Run the capability probe
 
 Verifies your local Qwen3.5-4B has everything Polaris needs.
 
 ```bash
 # 1. Install Ollama (one-time): https://ollama.com/download
-# 2. Pull the model
+# 2. Pull the models
 ollama pull qwen3.5:4b
-ollama pull mxbai-embed-large    # for the future embeddings index
+ollama pull qwen3.6:35b-a3b    # reasoning roles — ~23 GB, put on fast storage
+ollama pull mxbai-embed-large  # for the future embeddings index
 
 # 3. Run the probe (all tests)
 python3 probe.py

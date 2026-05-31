@@ -10,8 +10,9 @@
 ## Project at a glance
 
 **Polaris** is a Chrome MV3 browser extension that gives the browser a
-goal-anchored agentic AI assistant, powered *entirely locally* by `qwen3.5:4b`
-via Ollama. Phase 1 use case: cross-retailer shopping deal hunter.
+goal-anchored agentic AI assistant, powered locally by `qwen3.5:4b`
+(hot-path) and `qwen3.6:35b-a3b` (reasoning roles) via Ollama, with optional
+per-role cloud routing (BYOK). Phase 1 use case: cross-retailer shopping deal hunter.
 
 The architectural distinction is a hierarchical **Planner / Executor /
 Evaluator** loop with persistent state stored *outside* the model context,
@@ -58,9 +59,14 @@ in "Open questions" first.
    - Vision tool used to *verify* extracted facts against a screenshot.
    - Screenshots must be **≥ 1200 px wide** — smaller and the model
      hallucinates instead of refusing.
-6. **Single reasoning model.** qwen3.5:4b for all three reasoning roles
-   (Planner / Executor / Evaluator). The 35B-MoE doesn't fit on the
-   user's 5 GB GPU and runs on CPU only — not viable for interactive use.
+6. **Local-first, per-role model routing.** Default is fully local with both
+   models resident: Planner + Evaluator → `qwen3.6:35b-a3b` (quality reasoning),
+   Executor + Compactor → `qwen3.5:4b` (hot-path / throughput). Cloud BYOK is an
+   OPT-IN per-role upgrade, OFF by default — full functionality requires no cloud
+   config. (Locked 2026-05-31 via the §10 model-distribution flow; see
+   `docs/superpowers/specs/2026-05-30-hybrid-delta-wiring-design.md` and
+   `extension/docs/model-distribution-verification.md`. Supersedes the prior
+   "single local model" rule.)
 7. **Embedding model.** `mxbai-embed-large` (335 M params, 1024-d,
    MTEB Overall 64.68 per the leaderboard mid-2026). Configurable via
    `settings.embeddingModel` for future swaps if a stronger small model
@@ -282,6 +288,20 @@ to decide budgets, not the 262 K theoretical context.
 
 ## Recent decisions (append at top — most recent first)
 
+- **2026-05-31** Model-distribution locked all-local (cloud opt-in): Planner +
+  Evaluator → `qwen3.6:35b-a3b`; Executor + Compactor → `qwen3.5:4b`. Both
+  models resident simultaneously (4B=VRAM, 35B=CPU/RAM, ~0.2 s role-switch).
+  Linux verification (P2200, Ollama 0.22.1) refuted two Gemini-research findings:
+  (1) parser-mismatch — the Hermes-JSON/XML tool-call corruption does NOT
+  reproduce on 0.22.1 (10/10 clean calls on both models), so NO client-side XML
+  fallback parser was built; (2) swap-thrashing — 4B (VRAM) and 35B (CPU/RAM)
+  coexist on different hardware; mandatory model pinning was dropped (optional
+  `MAX_LOADED_MODELS=2` suffices). Confirmed: 35B roles require `num_predict ≥
+  2048` + raised per-role timeouts (Planner ≥ 25 min, Evaluator ≥ 12 min).
+  Actions were domain-tier-gated from Phase 1 (click/type/select available via
+  CDP, host defaults to `read-only`, user opts in per domain); the old "read-only
+  Phase 1" stack note is superseded.
+
 - **2026-05-29** Hybrid delta implementation: 13 commits closing 4 of 6 architecture-delta phases. vision.ground tool is a factory (needs client+model), not a plain export — registered in orchestrator after createDefaultRegistry. tab.type uses Runtime.evaluate for field clearing instead of single backspace (which only deletes one char). CloudClient is raw fetch() with no SDK. Per-role provider config is backward-compatible (existing `{client, model}` callers unaffected). PII redaction is two-tier: irreversible for disk, reversible for cloud.
 - **2026-05-25 night** Removed the `OllamaClient.rerank()` method, the
   `settings.rerankerModel` field, and all qwen3-embedding / qwen3-reranker
@@ -341,7 +361,11 @@ to decide budgets, not the 262 K theoretical context.
   patent protection vs MIT).
 - **2026-05-23** Stack chosen: Chrome MV3 only (not cross-browser),
   Ollama (configurable URL), Chrome Side Panel (not popup or new tab),
-  read-only Phase 1 (no checkout automation).
+  **read by default; actions are domain-tier-gated** — click / type / select
+  are available via CDP but gated per host (default `read-only`, fail-closed;
+  the user opts a host into `click-only` / `full-action`). No checkout
+  automation. (Supersedes the earlier "read-only Phase 1 (no checkout
+  automation)" wording from this session.)
 
 ---
 

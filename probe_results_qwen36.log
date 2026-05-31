@@ -1,0 +1,11 @@
+probe.py  model=qwen3.6:35b-a3b  base=http://localhost:11434
+out=probe_results.json  log=probe_results.log
+host: Linux appusai-ThinkStation-P330 6.17.0-29-generic #29~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon May 11 10:30:58 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+
+=== chat + latency (5 calls) ===
+  1: wall=1.03s  tps=11.2  gen=2  reply='pong'
+  2: wall=1.04s  tps=11.7  gen=2  reply='pong'
+  3: wall=1.00s  tps=11.8  gen=2  reply='pong'
+  4: wall=1.01s  tps=10.7  gen=2  reply='pong'
+  5: wall=1.00s  tps=11.1  gen=2  reply='pong'
+  AVG tok/sec (excl first): 11.3

@@ -1,11 +1,66 @@
-probe.py  model=qwen3.6:35b-a3b  base=http://localhost:11434
+probe.py  model=qwen3.5:4b  base=http://localhost:11434
 out=probe_results.json  log=probe_results.log
 host: Linux appusai-ThinkStation-P330 6.17.0-29-generic #29~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon May 11 10:30:58 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
 
+=== preflight: Ollama up + model present ===
+  Ollama reachable, 7 models loaded
+  Target qwen3.5:4b: PRESENT
+  arch=qwen35, advertised context_length=262144
+
 === chat + latency (5 calls) ===
-  1: wall=1.03s  tps=11.2  gen=2  reply='pong'
-  2: wall=1.04s  tps=11.7  gen=2  reply='pong'
-  3: wall=1.00s  tps=11.8  gen=2  reply='pong'
-  4: wall=1.01s  tps=10.7  gen=2  reply='pong'
-  5: wall=1.00s  tps=11.1  gen=2  reply='pong'
-  AVG tok/sec (excl first): 11.3
+  1: wall=3.49s  tps=37.0  gen=2  reply='pong'
+  2: wall=0.36s  tps=38.8  gen=2  reply='pong'
+  3: wall=0.34s  tps=38.6  gen=2  reply='pong'
+  4: wall=0.34s  tps=38.1  gen=2  reply='pong'
+  5: wall=0.35s  tps=39.2  gen=2  reply='pong'
+  AVG tok/sec (excl first): 38.7
+
+=== native tool calling ===
+  tool_calls returned: 1  ok=True
+  first call: {"id": "call_nu40p9o8", "function": {"index": 0, "name": "get_current_weather", "arguments": {"city": "Tokyo", "unit": "celsius"}}}
+
+=== thinking-mode toggle ===
+  think=True : thinking_len=861, gen=402, content='391'
+  think=False: thinking_len=0, gen=4, content='391'
+
+=== format:'json' string mode (10 calls) ===
+  10/10 valid
+
+=== format:<schema> object mode (3 calls — known to be flaky) ===
+  0/3 valid (if 0, schema-object mode confirmed broken — use json string mode or tool calls)
+
+=== tool-call as structured-output channel (5 calls) ===
+  4/5 valid
+
+=== streaming SSE ===
+  ttft=0.28s  total=0.76s  chunks=6  text='1\n2\n3\n4\n5'
+
+=== multi-turn continuity ===
+  turn3 reply: 'Teal. Mochi.'
+
+=== vision: scaling image size ===
+  source image: /home/appusai/Documents/Projects/Polaris/docs/ollama-qwen35-page.png
+  resizer: convert
+  400px (18 KB) wall=1.1s ok=False reply='Ampere A100'
+  800px (51 KB) wall=1.2s ok=False reply='Oren2.2'
+  1600px (143 KB) wall=3.7s ok=True reply='qwen3.5-4b'
+
+=== embeddings (mxbai-embed-large) ===
+  model=mxbai-embed-large:latest dims=1024 wall=2.93s
+
+=== needle-in-haystack (depths in K: [4, 16, 32, 64, 128]) ===
+  -> 4K  prompt_chars=16369  num_ctx=8192
+     prompt_tokens=3658  wall=14.5s  found=True
+     reply: 'BLUE-DOLPHIN-42'
+  -> 16K  prompt_chars=65644  num_ctx=20480
+     prompt_tokens=14609  wall=54.7s  found=True
+     reply: 'BLUE-DOLPHIN-42'
+  -> 32K  prompt_chars=131119  num_ctx=36864
+     prompt_tokens=29158  wall=129.8s  found=True
+     reply: 'BLUE-DOLPHIN-42'
+  -> 64K  prompt_chars=262294  num_ctx=69632
+     prompt_tokens=58309  wall=372.1s  found=True
+     reply: 'BLUE-DOLPHIN-42'
+  -> 128K  prompt_chars=524419  num_ctx=135168
+     prompt_tokens=116558  wall=1089.4s  found=True
+     reply: 'BLUE-DOLPHIN-42'
