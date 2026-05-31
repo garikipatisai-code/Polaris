@@ -3,6 +3,7 @@
 
 import { log } from '../agent/log';
 import { recordCharsPerToken } from '../agent/budget';
+import { composeSignal, wasTimeout, type ComposedSignal } from './signal';
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -84,77 +85,8 @@ export const DEFAULT_KEEP_ALIVE = '10m';
 /** Default ping timeout. Should be near-instant; long delay implies wrong URL. */
 export const DEFAULT_PING_TIMEOUT_MS = 10_000;
 
-/**
- * Compose a user-supplied AbortSignal with a manual timeout. Returns the
- * combined signal AND a `cleanup()` callback that the caller MUST invoke in
- * a `finally` block. The cleanup clears the internal timer and detaches the
- * abort listener — without it, a successful fast call would leave the
- * `setTimeout` queued for the full `timeoutMs` window. For an agent loop
- * that does dozens of calls per task, that's dozens of zombie timers held
- * by the SW event loop.
- *
- * Intentionally implemented as a manual setTimeout / clearTimeout pair
- * instead of `AbortSignal.timeout` — the latter creates an unref'd timer
- * that can't be cancelled when the request completes early.
- */
-interface ComposedSignal {
-  signal: AbortSignal;
-  cleanup: () => void;
-}
-
-function composeSignal(
-  userSignal: AbortSignal | undefined,
-  timeoutMs: number,
-): ComposedSignal {
-  const ctrl = new AbortController();
-  const cleanups: Array<() => void> = [];
-
-  // Forward user aborts.
-  if (userSignal) {
-    if (userSignal.aborted) {
-      ctrl.abort(userSignal.reason);
-    } else {
-      const onAbort = (): void => {
-        if (!ctrl.signal.aborted) ctrl.abort(userSignal.reason);
-      };
-      userSignal.addEventListener('abort', onAbort, { once: true });
-      cleanups.push(() => userSignal.removeEventListener('abort', onAbort));
-    }
-  }
-
-  // Schedule the timeout, but only if not already aborted.
-  if (timeoutMs > 0 && !ctrl.signal.aborted) {
-    const timer = setTimeout(() => {
-      if (!ctrl.signal.aborted) {
-        // Use DOMException to match the shape native AbortSignal.timeout
-        // produces, so wasTimeout() detection stays consistent.
-        const err =
-          typeof DOMException !== 'undefined'
-            ? new DOMException(`timed out after ${timeoutMs}ms`, 'TimeoutError')
-            : Object.assign(new Error(`timed out after ${timeoutMs}ms`), { name: 'TimeoutError' });
-        ctrl.abort(err);
-      }
-    }, timeoutMs);
-    cleanups.push(() => clearTimeout(timer));
-  }
-
-  return {
-    signal: ctrl.signal,
-    cleanup: () => {
-      for (const fn of cleanups) {
-        try { fn(); } catch { /* defensive */ }
-      }
-    },
-  };
-}
-
-/** True if an AbortError came from a timeout signal rather than a user abort. */
-export function wasTimeout(e: unknown): boolean {
-  const err = e as { name?: string; cause?: { name?: string } } | null;
-  if (!err) return false;
-  if (err.name === 'TimeoutError') return true;
-  return err.cause?.name === 'TimeoutError';
-}
+// Re-export wasTimeout so existing importers of './ollama' continue to resolve.
+export { wasTimeout };
 
 export class OllamaClient {
   constructor(public baseUrl: string) {}
