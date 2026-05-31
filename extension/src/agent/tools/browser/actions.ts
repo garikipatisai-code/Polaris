@@ -15,14 +15,16 @@
 //   1. chrome.tabs.get(tabId) -> url + status
 //   2. assertCanAct(url, required-ter)
 //   3. chrome.debugger.attach({tabId}, '1.3')
-//   4. If backendDOMNodeId provided:
+//   4. DOM.getDocument (always — initialises the DOM agent for this session)
+//   5. If backendDOMNodeId provided:
 //        DOM.resolveNode -> DOM.requestNode -> nodeId
 //      If selector provided:
-//        DOM.getDocument -> DOM.querySelector -> nodeId
-//   5. DOM.getContentQuads -> quads
-//   6. Compute click center: x0 + (offsetX ?? width/2), y0 + (offsetY ?? height/2)
-//   7. Input.dispatchMouseEvent(mousePressed) -> Input.dispatchMouseEvent(mouseReleased)
-//   8. chrome.debugger.detach({tabId})  (in finally block)
+//        DOM.querySelector (using document nodeId from step 4) -> nodeId
+//   6. DOM.scrollIntoViewIfNeeded (best-effort, so below-fold elements are in viewport)
+//   7. DOM.getContentQuads -> quads
+//   8. Compute click center: x0 + (offsetX ?? width/2), y0 + (offsetY ?? height/2)
+//   9. Input.dispatchMouseEvent(mousePressed) -> Input.dispatchMouseEvent(mouseReleased)
+//  10. chrome.debugger.detach({tabId})  (in finally block)
 
 import { z } from 'zod';
 import type { ToolHandler } from '../registry';
@@ -352,9 +354,20 @@ async function resolveElementCoords(
 ): Promise<{ x: number; y: number }> {
   const target: { tabId: number } = { tabId };
 
+  // (1) Initialize the DOM agent for THIS session. Required before any
+  // DOM.requestNode / DOM.querySelector call — on a real page the
+  // backendDOMNodeId path otherwise fails with "Could not find node with
+  // given id". The selector path also reuses this document node.
+  const docResult = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 });
+  const documentNodeId = (docResult as { root?: { nodeId: number } })?.root?.nodeId;
+  if (typeof documentNodeId !== 'number') {
+    throw new BrowserToolError('tab.click: could not get document', { fatal: true });
+  }
+
+  // (2) Resolve to a DOM nodeId.
   let nodeId: number;
   if (backendDOMNodeId !== undefined) {
-    // Path 1: resolve from backendDOMNodeId (from ARIA tree)
+    // Path 1: resolve from backendDOMNodeId (from the ARIA tree).
     const resolveResult = await chrome.debugger.sendCommand(target, 'DOM.resolveNode', {
       backendNodeId: backendDOMNodeId,
     }) as { object?: { objectId?: string } } | undefined;
@@ -375,12 +388,7 @@ async function resolveElementCoords(
     }
     nodeId = domResult.nodeId;
   } else if (selector) {
-    // Path 2: fallback to CSS selector
-    const docResult = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 });
-    const documentNodeId = (docResult as { root?: { nodeId: number } })?.root?.nodeId;
-    if (typeof documentNodeId !== 'number') {
-      throw new BrowserToolError('tab.click: could not get document', { fatal: true });
-    }
+    // Path 2: fallback to CSS selector against the document node from (1).
     const queryResult = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
       nodeId: documentNodeId,
       selector,
@@ -396,13 +404,23 @@ async function resolveElementCoords(
     }
     nodeId = (queryResult as { nodeId: number }).nodeId;
   } else {
-    // Should be unreachable because argsSchema.refine enforces at least one
+    // Should be unreachable because argsSchema.refine enforces at least one.
     throw new BrowserToolError('tab.click: no backendDOMNodeId or selector provided', {
       fatal: false,
     });
   }
 
-  // Get bounding box via DOM.getContentQuads
+  // (3) Bring the element into the viewport BEFORE measuring it. getContentQuads
+  // returns viewport-relative coordinates; an element below the fold would
+  // otherwise yield a quad the mouse event misses. Best-effort: some nodes
+  // (e.g. detached) can't scroll — don't fail the click over it.
+  try {
+    await chrome.debugger.sendCommand(target, 'DOM.scrollIntoViewIfNeeded', { nodeId });
+  } catch {
+    /* best-effort: element may not support scrollIntoView */
+  }
+
+  // (4) Bounding box via DOM.getContentQuads.
   const quadsResult = await chrome.debugger.sendCommand(target, 'DOM.getContentQuads', { nodeId });
   const quads = (quadsResult as { quads?: number[][] })?.quads;
   if (!quads || quads.length === 0) {

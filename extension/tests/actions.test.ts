@@ -25,8 +25,10 @@ beforeEach(async () => {
   // Default mock responses for the happy path
   mockTabsGet.mockResolvedValue({ id: 42, url: 'https://example.com/page' });
   mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'obj-1' } };
     if (method === 'DOM.requestNode') return { nodeId: 101 };
+    if (method === 'DOM.scrollIntoViewIfNeeded') return {};
     if (method === 'DOM.getContentQuads') return { quads: [[10, 20, 100, 20, 100, 60, 10, 60]] };
     if (method === 'Input.dispatchMouseEvent') return {};
     return {};
@@ -120,6 +122,7 @@ describe('tab.click', () => {
     mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
       if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
       if (method === 'DOM.querySelector') return { nodeId: 202 };
+      if (method === 'DOM.scrollIntoViewIfNeeded') return {};
       if (method === 'DOM.getContentQuads') return { quads: [[30, 40, 200, 40, 200, 100, 30, 100]] };
       if (method === 'Input.dispatchMouseEvent') return {};
       return {};
@@ -148,8 +151,10 @@ describe('tab.click', () => {
 
   it('throws when element has no visible bounding box', async () => {
     mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
       if (method === 'DOM.resolveNode') return { object: { objectId: 'obj-1' } };
       if (method === 'DOM.requestNode') return { nodeId: 101 };
+      if (method === 'DOM.scrollIntoViewIfNeeded') return {};
       if (method === 'DOM.getContentQuads') return { quads: [] };
       return {};
     });
@@ -175,8 +180,10 @@ describe('tab.click', () => {
   it('rounds fractional coordinates to integers', async () => {
     // Use a quad with odd width/height so center calculation uses Math.floor
     mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
       if (method === 'DOM.resolveNode') return { object: { objectId: 'obj-1' } };
       if (method === 'DOM.requestNode') return { nodeId: 101 };
+      if (method === 'DOM.scrollIntoViewIfNeeded') return {};
       if (method === 'DOM.getContentQuads') return { quads: [[0, 0, 11, 0, 11, 7, 0, 7]] };
       if (method === 'Input.dispatchMouseEvent') return {};
       return {};
@@ -187,6 +194,32 @@ describe('tab.click', () => {
     );
     expect(result.x).toBe(5); // floor(11/2) = 5
     expect(result.y).toBe(3); // floor(7/2) = 3
+  });
+
+  it('calls DOM.getDocument before DOM.requestNode on the backendDOMNodeId path', async () => {
+    await tabClickTool.execute(
+      { tabId: 42, backendDOMNodeId: 7 },
+      { taskId: 't1', stepId: null },
+    );
+    const order = mockSendCommand.mock.calls.map((c: unknown[]) => (c as [unknown, string])[1]);
+    const docIdx = order.indexOf('DOM.getDocument');
+    const reqIdx = order.indexOf('DOM.requestNode');
+    expect(docIdx).toBeGreaterThanOrEqual(0);
+    expect(reqIdx).toBeGreaterThanOrEqual(0);
+    expect(docIdx).toBeLessThan(reqIdx);
+  });
+
+  it('calls DOM.scrollIntoViewIfNeeded before DOM.getContentQuads', async () => {
+    await tabClickTool.execute(
+      { tabId: 42, backendDOMNodeId: 7 },
+      { taskId: 't1', stepId: null },
+    );
+    const order = mockSendCommand.mock.calls.map((c: unknown[]) => (c as [unknown, string])[1]);
+    const scrollIdx = order.indexOf('DOM.scrollIntoViewIfNeeded');
+    const quadsIdx = order.indexOf('DOM.getContentQuads');
+    expect(scrollIdx).toBeGreaterThanOrEqual(0);
+    expect(quadsIdx).toBeGreaterThanOrEqual(0);
+    expect(scrollIdx).toBeLessThan(quadsIdx);
   });
 });
 
