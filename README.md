@@ -1,6 +1,6 @@
 # ★ Polaris
 
-A goal-anchored agentic browser extension for Chrome, powered by a local Qwen3.5-4B via Ollama.
+A goal-anchored agentic browser extension for Chrome, powered by local Qwen models via Ollama — `qwen3.5:4b` on the hot path, `qwen3.6:35b-a3b` for planning and evaluation.
 
 > Your North Star for the web — never loses sight of what you actually asked for.
 
@@ -216,7 +216,7 @@ chrome.sidePanel UI ──► background service worker
                           │   └── Search (DuckDuckGo / Google Shopping)
                           │
                           ├── Clients
-                          │   ├── Ollama HTTP client (local, qwen3.5:4b)
+                          │   ├── Ollama HTTP client (local — qwen3.5:4b hot-path, qwen3.6:35b-a3b reasoning)
                           │   └── CloudClient (OpenAI-format, raw fetch)
                           │
                           └── PII handling
@@ -245,7 +245,7 @@ See [`docs/research-notes.md`](docs/research-notes.md) for the literature survey
 ## Stack
 
 - **Browser:** Chrome MV3 (works on Edge / Brave / Arc / Opera)
-- **Model:** [Qwen3.5-4B](https://ollama.com/library/qwen3.5) via [Ollama](https://ollama.com) — hybrid Gated DeltaNet SSM + sparse full-attention, native vision, native tool calling, 256K context
+- **Models:** [qwen3.5:4b](https://ollama.com/library/qwen3.5) (Executor/Compactor hot-path) + [qwen3.6:35b-a3b](https://ollama.com/library/qwen3.6) (Planner/Evaluator reasoning) via [Ollama](https://ollama.com) — hybrid Gated DeltaNet SSM + sparse full-attention, native vision, native tool calling, 256K context
 - **Embeddings:** [mxbai-embed-large](https://ollama.com/library/mxbai-embed-large) for archival memory retrieval
 - **UI:** chrome.sidePanel API (Chrome 114+)
 
