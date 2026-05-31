@@ -9,10 +9,13 @@
 
 ## Project at a glance
 
-**Polaris** is a Chrome MV3 browser extension that gives the browser a
-goal-anchored agentic AI assistant, powered locally by `qwen3.5:4b`
+**Polaris** is a Chrome MV3 browser extension that turns the browser into a
+goal-anchored agentic assistant: state any goal you'd open a browser to
+accomplish and it pursues it autonomously, staying locked on your original
+intent even as working context fills. Powered locally by `qwen3.5:4b`
 (hot-path) and `qwen3.6:35b-a3b` (reasoning roles) via Ollama, with optional
-per-role cloud routing (BYOK). Phase 1 use case: cross-retailer shopping deal hunter.
+per-role cloud routing (BYOK). First proving ground (Phase 1): cross-retailer
+deal hunting.
 
 The architectural distinction is a hierarchical **Planner / Executor /
 Evaluator** loop with persistent state stored *outside* the model context,

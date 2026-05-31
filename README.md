@@ -1,26 +1,25 @@
 # ★ Polaris
 
-A goal-anchored agentic browser extension for Chrome, powered by local Qwen models via Ollama — `qwen3.5:4b` on the hot path, `qwen3.6:35b-a3b` for planning and evaluation.
+A goal-anchored agentic assistant for Chrome: tell it any goal you'd open a browser to accomplish, and it pursues that goal autonomously — without losing the thread. Local-first via Ollama (`qwen3.5:4b` hot-path + `qwen3.6:35b-a3b` reasoning), with optional per-role cloud BYOK.
 
 > Your North Star for the web — never loses sight of what you actually asked for.
 
 ## What this is
 
-Polaris runs fully locally by default — no browsing data leaves your machine.
-You can optionally enable per-role cloud routing (bring your own API key); when
-you do, only PII-anonymized prompts are sent to your configured provider, and
-everything else stays local. The agent autonomously opens tabs, reads pages, and synthesizes results in pursuit of a goal you specify.
+You state a goal in plain language — research a topic, compare options, book or fill something out, monitor a page over time, look something up across a dozen sources, hunt a deal — and Polaris pursues it: opening tabs, reading pages, and synthesizing results until the goal is met. It's built for any task you'd open a browser to accomplish, not a single canned workflow.
+
+It runs fully locally by default — no browsing data leaves your machine. Optionally enable per-role cloud routing (bring your own key); only PII-anonymized prompts are sent to your configured provider, and everything else stays local.
 
 The architectural distinction: a hierarchical **Planner / Executor / Evaluator** loop with persistent state outside the model context, so the agent stays locked on your original goal even when its working context fills up mid-task.
 
-**Phase 1 use case:** cross-retailer shopping deal hunter. Tell Polaris what you want; it searches Amazon, Walmart, Best Buy, Target, etc.; extracts price + shipping + stock + coupons; ranks by total cost; surfaces the best deals. You click to buy — no checkout automation.
+**First proving ground (Phase 1):** cross-retailer deal hunting — a deliberately hard, multi-step, multi-tab goal. Tell Polaris what you want; it searches Amazon, Walmart, Best Buy, Target, etc.; extracts price + shipping + stock + coupons; ranks by total cost; surfaces the best options. You click to buy — no checkout automation. The same loop generalizes to any goal; deal-hunting is just where we harden it first.
 
 ## Status
 
 In active development. Currently:
 
 - ✅ Architecture designed (hierarchical agent + persistent state + ARIA-tree extraction + vision-grounded verification)
-- ✅ Capability probe written and verified against Qwen3.5-4B on real hardware
+- ✅ Capability probe written and verified against the local Qwen models on real hardware
 - ✅ **M1** — extension skeleton + Ollama wiring + streaming chat in side panel
 - ✅ **M2** — full agent loop (Planner / Executor / Evaluator / Compactor) with persistent state, step advancement, circuit breaker, watchdog, crash-resume, and 116 unit + integration tests proving goal byte-survival across replan
 - ✅ **M3** — real browser tools backend wired (ARIA-tree extractor, tab manager, search, retailer adapter framework + Amazon, browser tool lifecycle); **page-action tools** (CDP click/type/select with domain-tier gating); **vision.ground** verification tool via Ollama vision model; 376 total tests
@@ -161,7 +160,7 @@ re-add `OLLAMA_ORIGINS=chrome-extension://*` (a `systemctl revert` wipes it).
 
 ## Run the capability probe
 
-Verifies your local Qwen3.5-4B has everything Polaris needs.
+Verifies your local Qwen models have everything Polaris needs.
 
 ```bash
 # 1. Install Ollama (one-time): https://ollama.com/download
@@ -224,7 +223,7 @@ chrome.sidePanel UI ──► background service worker
                               └── Reversible anonymize/deanonymize (cloud-bound)
 ```
 
-The hierarchical role split keeps per-call context tight (≤16K for the Executor hot path) so the GPU-resident KV cache stays small and the agent feels responsive. Larger calls (planning, evaluation) are rare and tolerate higher latency.
+The hierarchical role split keeps per-call context tight (≤6K for the Executor hot path) so the GPU-resident KV cache stays small and the agent feels responsive. Larger calls (planning, evaluation) are rare and tolerate higher latency.
 
 See [`docs/research-notes.md`](docs/research-notes.md) for the literature survey behind these design choices.
 
@@ -239,7 +238,7 @@ See [`docs/research-notes.md`](docs/research-notes.md) for the literature survey
   - Mock tools (`echo`, `add`, `sum`, `delay`, `next_step`, `finish`, `memory.read/write/list`)
   - 73 tests: pure-function unit tests + orchestrator integration tests with a scripted fake Ollama client (no model dependency)
 - **M3** ✅ Real browser tools (ARIA-tree extractor, tab management, search, page-action click/type/select, vision.ground, SoM overlay) — 376 tests
-- **M4** Shopping domain (retailer adapters, coupon lookup, deal ranking UI)
+- **M4** First vertical — shopping / deal-hunting (retailer adapters, coupon lookup, deal-ranking UI)
 - **M5** Polish (price history, error recovery, onboarding, settings)
 
 ## Stack
