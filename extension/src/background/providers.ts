@@ -80,7 +80,7 @@ export function localModelsInUse(settings: Settings): string[] {
   const models = new Set<string>([settings.model]);
   const roles: ReasoningRole[] = ['planner', 'executor', 'evaluator', 'compactor'];
   for (const role of roles) {
-    if (settings.cloud?.[role]?.apiKey) continue; // cloud role — not a local model
+    if (role !== 'compactor' && settings.cloud?.[role]?.apiKey) continue; // cloud role — not a local model (compactor is always local)
     const m = settings.roleModels?.[role];
     if (m) models.add(m);
   }

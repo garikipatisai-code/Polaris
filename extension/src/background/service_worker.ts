@@ -15,6 +15,7 @@ import * as stressTest from '../agent/stress_test';
 import * as metrics from '../agent/metrics';
 import * as domainTiers from '../agent/domain_tiers';
 import { Orchestrator } from '../agent/orchestrator';
+import { buildProviders, localModelsInUse } from './providers';
 
 // Expose agent primitives on globalThis.polaris so the SW DevTools console
 // can introspect and exercise the store directly. Cheap in bundle terms;
@@ -312,12 +313,15 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
     });
     return;
   }
-  if (!ping.models?.includes(settings.model)) {
+  const needed = localModelsInUse(settings);
+  const missing = needed.filter((m) => !ping.models?.includes(m));
+  if (missing.length > 0) {
     send(port, {
       type: 'agent.terminal',
       phase: 'ABORTED',
-      error: `model "${settings.model}" not present at ${settings.ollamaBaseUrl}. ` +
-        `Available: ${(ping.models ?? []).slice(0, 5).join(', ') || '(none)'}.`,
+      error: `model(s) not present at ${settings.ollamaBaseUrl}: ${missing.join(', ')}. ` +
+        `Pull them (e.g. \`ollama pull ${missing[0]}\`) or change the model in Polaris settings. ` +
+        `Available: ${(ping.models ?? []).slice(0, 8).join(', ') || '(none)'}.`,
     });
     return;
   }
@@ -325,9 +329,13 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
   let lastSummary: string | undefined;
   let lastError: string | undefined;
 
+  const providers = buildProviders(settings, client);
   const orchestrator = new Orchestrator({
-    client,
-    model: settings.model,
+    defaultProvider: providers.defaultProvider,
+    plannerProvider: providers.plannerProvider,
+    executorProvider: providers.executorProvider,
+    evaluatorProvider: providers.evaluatorProvider,
+    compactorProvider: providers.compactorProvider,
     plannerThinking: settings.plannerThinking,
     evaluatorThinking: settings.evaluatorThinking,
     onEvent: (event) => {
@@ -435,9 +443,13 @@ async function handleAgentResume(port: chrome.runtime.Port): Promise<void> {
   let lastSummary: string | undefined;
   let lastError: string | undefined;
 
+  const providers = buildProviders(settings, client);
   const orchestrator = new Orchestrator({
-    client,
-    model: settings.model,
+    defaultProvider: providers.defaultProvider,
+    plannerProvider: providers.plannerProvider,
+    executorProvider: providers.executorProvider,
+    evaluatorProvider: providers.evaluatorProvider,
+    compactorProvider: providers.compactorProvider,
     plannerThinking: settings.plannerThinking,
     evaluatorThinking: settings.evaluatorThinking,
     onEvent: (event) => {
