@@ -27,6 +27,17 @@ export interface Settings {
     evaluator?: CloudProviderConfig;
     compactor?: CloudProviderConfig;
   };
+  /**
+   * Per-role LOCAL model override (same Ollama server, different model tag).
+   * Locked defaults route the reasoning roles to the capable 35B; Executor /
+   * Compactor inherit `model` (the fast 4B). Cloud (above) takes precedence.
+   */
+  roleModels?: {
+    planner?: string;
+    executor?: string;
+    evaluator?: string;
+    compactor?: string;
+  };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -36,6 +47,12 @@ export const DEFAULT_SETTINGS: Settings = {
   enableThinking: false,
   plannerThinking: true,
   evaluatorThinking: true,
+  // Locked 2026-05-31 (spec §10): reasoning roles -> capable local 35B;
+  // Executor/Compactor inherit the fast 4B (`model`). Cloud stays opt-in/off.
+  roleModels: {
+    planner: 'qwen3.6:35b-a3b',
+    evaluator: 'qwen3.6:35b-a3b',
+  },
 };
 
 export interface ChatStats {
