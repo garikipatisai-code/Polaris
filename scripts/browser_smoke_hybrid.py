@@ -41,6 +41,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import platform
 import shutil
 import signal
 import socket
@@ -62,7 +63,10 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO = SCRIPTS_DIR.parent
 DIST = REPO / "extension" / "dist"
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+if platform.system() == "Linux":
+    CHROME = os.environ.get("CHROME_BIN", "/usr/bin/google-chrome")
+else:
+    CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Import proven helpers from browser_smoke.py
@@ -138,17 +142,31 @@ def _start_page_server() -> tuple[HTTPServer, int]:
 
 def open_page_cdp(cdp_port: int, url: str, timeout: float = 15) -> tuple[str, CDP]:
     """Open a new tab to `url` and return its targetId + a CDP session on it."""
-    # Create target via HTTP
-    result = json.loads(http_get(
-        f"http://localhost:{cdp_port}/json/new?{urllib.request.quote(url)}",
-        timeout=timeout,
-    ))
-    target_id = result.get("id") or result.get("targetId") or result.get("Id")
-    ws_url = result.get("webSocketDebuggerUrl")
-    if not target_id or not ws_url:
-        raise RuntimeError(f"Could not open page: {result}")
+    # Get browser WebSocket URL
+    ver = json.loads(http_get(f"http://localhost:{cdp_port}/json/version", timeout=timeout))
+    browser_ws = ver.get("webSocketDebuggerUrl")
+    if not browser_ws:
+        raise RuntimeError(f"No browser WebSocket URL: {ver}")
+    # Use Target.createTarget over WebSocket (HTTP /json/new is 405 on Chrome 148+)
+    browser_cdp = CDP(browser_ws)
+    result = browser_cdp.call("Target.createTarget", {
+        "url": url,
+        "newWindow": False,
+    }, timeout=timeout)
+    browser_cdp.close()
+    target_id = result.get("targetId")
+    if not target_id:
+        raise RuntimeError(f"Target.createTarget failed: {result}")
+    # Discover the page's WebSocket URL from /json list
+    targets = json.loads(http_get(f"http://localhost:{cdp_port}/json", timeout=timeout))
+    ws_url = None
+    for t in targets:
+        if t.get("id") == target_id:
+            ws_url = t.get("webSocketDebuggerUrl")
+            break
+    if not ws_url:
+        raise RuntimeError(f"Could not find WS URL for target {target_id}")
     page_cdp = CDP(ws_url)
-    # Enable the domains we need
     page_cdp.call("Runtime.enable")
     page_cdp.call("DOM.enable")
     return target_id, page_cdp
@@ -389,7 +407,6 @@ def main() -> int:
         "--no-default-browser-check",
         "--disable-default-apps",
         "--disable-features=TranslateUI",
-        "--silent-launch",
         "about:blank",
     ]
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
