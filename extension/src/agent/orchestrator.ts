@@ -20,6 +20,7 @@
 
 import type { OllamaClient } from '../background/ollama';
 import type { AnyClient } from '../background/chat_driver';
+import { CloudClient as CloudClientCtor } from '../background/cloud_client';
 import { ToolRegistry, createDefaultRegistry, createVisionGroundTool } from './tools';
 import { closeOwnedTabs } from './tools';
 import { runExecutor } from './roles/executor';
@@ -62,6 +63,10 @@ export { type AnyClient };
 export interface ProviderConfig {
   client: AnyClient;
   model: string;
+  /** Per-role timeout (ms). 35B reasoning roles need a large one. */
+  timeoutMs?: number;
+  /** num_predict for 35B thinking roles. */
+  numPredict?: number;
 }
 
 export interface OrchestratorOptions {
@@ -137,6 +142,17 @@ export class Orchestrator {
     const override = providers[role];
     if (override) return override;
     return { client: this.defaultClient, model: this.defaultModel };
+  }
+
+  /** Local default provider, used as the cloud fallback target. */
+  private localDefault(): ProviderConfig {
+    return { client: this.defaultClient, model: this.defaultModel };
+  }
+
+  /** Fallback for a role: the local default IFF the role's provider is cloud. */
+  private fallbackFor(role: 'planner' | 'executor' | 'evaluator'): ProviderConfig | undefined {
+    const prov = this.getProvider(role);
+    return prov.client instanceof CloudClientCtor ? this.localDefault() : undefined;
   }
 
   /**
@@ -389,12 +405,15 @@ export class Orchestrator {
     const result = await runPlanner({
       state: prepared,
       registry: this.registry,
-      client: plannerProv.client as OllamaClient,
+      client: plannerProv.client,
       model: plannerProv.model,
+      timeoutMs: plannerProv.timeoutMs,
+      numPredict: plannerProv.numPredict,
       signal: this.abort?.signal,
       isInitial,
       replanHint,
       thinkingMode: this.plannerThinking,
+      fallback: this.fallbackFor('planner'),
     });
     const latencyMs = Math.round(performance.now() - t0);
     void recordMetric({
@@ -465,7 +484,10 @@ export class Orchestrator {
       registry: this.registry,
       client: execProv.client,
       model: execProv.model,
+      timeoutMs: execProv.timeoutMs,
+      numPredict: execProv.numPredict,
       signal: this.abort?.signal,
+      fallback: this.fallbackFor('executor'),
     });
     const latencyMs = Math.round(performance.now() - t0);
     void recordMetric({
@@ -694,9 +716,12 @@ export class Orchestrator {
       state,
       client: evalProv.client,
       model: evalProv.model,
+      timeoutMs: evalProv.timeoutMs,
+      numPredict: evalProv.numPredict,
       signal: this.abort?.signal,
       thinkingMode: this.evaluatorThinking,
       triggeredByFinish,
+      fallback: this.fallbackFor('evaluator'),
     });
     void recordMetric({
       taskId: state.taskId,

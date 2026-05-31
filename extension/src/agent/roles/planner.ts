@@ -9,7 +9,8 @@
 // driven by Plan quality.
 
 import { z } from 'zod';
-import type { OllamaClient } from '../../background/ollama';
+import type { AnyClient } from '../../background/chat_driver';
+import { driveChatOnce } from '../../background/chat_driver';
 import type { ToolRegistry } from '../tools';
 import type { AgentStateHot, Plan, PlanStep } from '../../shared/agent_types';
 import { plannerSystemPrompt } from '../prompts/planner';
@@ -19,13 +20,16 @@ import * as store from '../state_store';
 export interface PlannerInput {
   state: AgentStateHot;
   registry: ToolRegistry;
-  client: OllamaClient;
+  client: AnyClient;
   model: string;
   signal?: AbortSignal;
   isInitial: boolean;
   replanHint?: string;
   /** Whether to enable Qwen's thinking mode for this Planner call. */
   thinkingMode: boolean;
+  timeoutMs?: number;
+  numPredict?: number;
+  fallback?: import('../../background/chat_driver').DriveProvider;
 }
 
 export interface PlannerOutput {
@@ -95,9 +99,10 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
     ? 'Produce the initial JSON plan now.'
     : 'Produce the revised JSON plan now, taking the replan hint into account.';
 
+  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict };
+
   // First attempt — thinking per setting.
-  let response = await client.chatOnce({
-    model,
+  let response = await driveChatOnce(provider, {
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userAnchor },
@@ -105,7 +110,7 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
     format: 'json',
     think: thinkingMode,
     signal,
-  });
+  }, input.fallback);
   let promptTokens = response.prompt_eval_count ?? estimatedPromptTokens;
   let genTokens = response.eval_count ?? 0;
   let content = response.message?.content ?? '';
@@ -141,13 +146,12 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
         content: '[previous output was unparseable JSON — produce the JSON now]',
       };
     }
-    response = await client.chatOnce({
-      model,
+    response = await driveChatOnce(provider, {
       messages: retryMessages,
       format: 'json',
       think: false,
       signal,
-    });
+    }, input.fallback);
     promptTokens += response.prompt_eval_count ?? 0;
     genTokens += response.eval_count ?? 0;
     content = response.message?.content ?? '';

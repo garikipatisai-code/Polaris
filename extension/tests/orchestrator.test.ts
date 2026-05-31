@@ -24,7 +24,7 @@ type Role = 'planner' | 'executor' | 'evaluator' | 'compactor' | 'unknown';
 
 class FakeOllamaClient {
   public baseUrl = 'http://fake';
-  public callLog: { role: Role; idx: number }[] = [];
+  public callLog: { role: Role; model: string; idx: number }[] = [];
   private queues: Record<Role, ChatChunk[]>;
 
   constructor(scripts: Partial<Record<Role, ChatChunk[]>>) {
@@ -54,7 +54,7 @@ class FakeOllamaClient {
       throw new Error(`FakeOllamaClient: no scripted response for role=${role}`);
     }
     const resp = queue.shift()!;
-    this.callLog.push({ role, idx: this.callLog.length });
+    this.callLog.push({ role, model: opts.model, idx: this.callLog.length });
     return resp;
   }
 
@@ -649,5 +649,35 @@ describe('orchestrator: vision.ground tool registration', () => {
     });
     const names = orchestrator['registry'].names();
     expect(names).toContain('vision.ground');
+  });
+});
+
+describe('orchestrator: per-role model routing', () => {
+  it('routes each role to its provider model (planner override, executor default)', async () => {
+    const fake = new FakeOllamaClient({
+      planner: [plannerR({ rootSteps: [{ id: 's1', title: 'echo then finish' }] })],
+      executor: [
+        execR({ name: 'echo', arguments: { text: 'hi' } }),
+        execR({ name: 'finish', arguments: { summary: 'ok' } }),
+      ],
+      evaluator: [evalR('done', { finalAnswer: 'ok', reason: 'v' })],
+    });
+
+    const orchestrator = new Orchestrator({
+      defaultProvider: { client: fake as unknown as OllamaClient, model: 'qwen3.5:4b' },
+      plannerProvider: { client: fake as unknown as OllamaClient, model: 'qwen3.6:35b-a3b', timeoutMs: 1500000, numPredict: 2048 },
+      evaluatorProvider: { client: fake as unknown as OllamaClient, model: 'qwen3.6:35b-a3b', timeoutMs: 720000, numPredict: 2048 },
+      plannerThinking: false,
+      evaluatorThinking: false,
+    });
+
+    await orchestrator.start('routing test');
+    const final = await orchestrator.runUntilTerminal();
+    expect(final.phase).toBe('DONE');
+
+    const byRole = (r: Role) => fake.callLog.filter((c) => c.role === r).map((c) => c.model);
+    expect(byRole('planner').every((m) => m === 'qwen3.6:35b-a3b')).toBe(true);
+    expect(byRole('evaluator').every((m) => m === 'qwen3.6:35b-a3b')).toBe(true);
+    expect(byRole('executor').every((m) => m === 'qwen3.5:4b')).toBe(true);
   });
 });

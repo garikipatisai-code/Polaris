@@ -11,7 +11,7 @@
 import type { OllamaClient } from '../../background/ollama';
 import type { CloudClient } from '../../background/cloud_client';
 import type { DriverResponse } from '../../background/chat_driver';
-import { normalizeCloudResponse } from '../../background/chat_driver';
+import { driveChatOnce } from '../../background/chat_driver';
 import type { ToolRegistry, ToolContext } from '../tools';
 import { SPECIAL_TOOLS } from '../tools';
 import type { AgentStateHot } from '../../shared/agent_types';
@@ -27,6 +27,9 @@ export interface ExecutorInput {
   client: OllamaClient | CloudClient;
   model: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
+  numPredict?: number;
+  fallback?: import('../../background/chat_driver').DriveProvider;
 }
 
 export interface ExecutorOutput {
@@ -78,9 +81,10 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
   // tool-calling mode without leaking task-specific text.
   const userAnchor = 'Take the next action toward completing the goal. Call exactly one tool now.';
 
+  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict };
+
   // First attempt
-  const rawFirst = await (client as any).chatOnce({
-    model,
+  const first: DriverResponse = await driveChatOnce(provider, {
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userAnchor },
@@ -88,12 +92,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
     tools: toolDefs,
     think: false,
     signal,
-  });
-  // Normalize cloud responses to DriverResponse shape; Ollama responses
-  // already match (they're a superset).
-  const first: DriverResponse = 'choices' in rawFirst
-    ? normalizeCloudResponse(rawFirst as any)
-    : rawFirst as DriverResponse;
+  }, input.fallback);
   let toolCalls = first.message?.tool_calls ?? [];
   let promptTokens = first.prompt_eval_count ?? estimatedPromptTokens;
   let genTokens = first.eval_count ?? 0;
@@ -125,16 +124,12 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
         content: '[previous output was unparseable — call exactly one tool now]',
       };
     }
-    const rawSecond = await (client as any).chatOnce({
-      model,
+    const second: DriverResponse = await driveChatOnce(provider, {
       messages: retryMessages,
       tools: toolDefs,
       think: false,
       signal,
-    });
-    const second: DriverResponse = 'choices' in rawSecond
-      ? normalizeCloudResponse(rawSecond as any)
-      : rawSecond as DriverResponse;
+    }, input.fallback);
     toolCalls = second.message?.tool_calls ?? [];
     promptTokens += second.prompt_eval_count ?? approxTokens(systemPrompt + nudge + failedContent);
     genTokens += second.eval_count ?? 0;

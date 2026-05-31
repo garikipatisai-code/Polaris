@@ -15,7 +15,7 @@ import { z } from 'zod';
 import type { OllamaClient } from '../../background/ollama';
 import type { CloudClient } from '../../background/cloud_client';
 import type { DriverResponse } from '../../background/chat_driver';
-import { normalizeCloudResponse } from '../../background/chat_driver';
+import { driveChatOnce } from '../../background/chat_driver';
 import type { AgentStateHot } from '../../shared/agent_types';
 import { evaluatorSystemPrompt } from '../prompts/evaluator';
 import { parseJSONPermissive } from './planner';
@@ -32,6 +32,9 @@ export interface EvaluatorInput {
   thinkingMode: boolean;
   /** True if the Executor's `finish` triggered this Evaluator, false for periodic checkpoint. */
   triggeredByFinish: boolean;
+  timeoutMs?: number;
+  numPredict?: number;
+  fallback?: import('../../background/chat_driver').DriveProvider;
 }
 
 export interface EvaluatorOutput {
@@ -85,8 +88,9 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     ? 'Evaluate whether the executor\'s proposed finish answer satisfies the goal. Return JSON only.'
     : 'Evaluate progress so far. Return your verdict as JSON only.';
 
-  const rawInit = await (client as any).chatOnce({
-    model,
+  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict };
+
+  const firstResp: DriverResponse = await driveChatOnce(provider, {
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userAnchor },
@@ -94,10 +98,7 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     format: 'json',
     think: thinkingMode,
     signal,
-  });
-  const firstResp: DriverResponse = 'choices' in rawInit
-    ? normalizeCloudResponse(rawInit as any)
-    : rawInit as DriverResponse;
+  }, input.fallback);
   let promptTokens = firstResp.prompt_eval_count ?? estimated;
   let genTokens = firstResp.eval_count ?? 0;
   let content = firstResp.message?.content ?? '';
@@ -129,16 +130,12 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
         content: '[previous output was unparseable JSON — produce the verdict JSON now]',
       };
     }
-    const rawRetry = await (client as any).chatOnce({
-      model,
+    const retryResp: DriverResponse = await driveChatOnce(provider, {
       messages: retryMessages,
       format: 'json',
       think: false,
       signal,
-    });
-    const retryResp: DriverResponse = 'choices' in rawRetry
-      ? normalizeCloudResponse(rawRetry as any)
-      : rawRetry as DriverResponse;
+    }, input.fallback);
     promptTokens += retryResp.prompt_eval_count ?? 0;
     genTokens += retryResp.eval_count ?? 0;
     content = retryResp.message?.content ?? '';
