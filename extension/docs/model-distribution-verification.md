@@ -571,43 +571,58 @@ POLARIS_REAL_OLLAMA=1 OLLAMA_MODEL=qwen3.5:4b npx vitest run tests/integration.t
 
 ---
 
-## Session results — <YYYY-MM-DD> (Linux, P2200)  ← fill this in
+## Session results — 2026-05-31 (Linux, P2200)
 
-**Hardware:** GPU ___ / Ollama ___ / Node ___
+**Hardware:** Quadro P2200 / Ollama 0.22.1 / Node v20.20.1
 
 ### Step 1 — 35B prefill at 6K (Prediction 1)
 | Model | prefill_s | prefill_tok_s | gen_tok_s | wall_s | verdict |
 |---|---|---|---|---|---|
-| qwen3.5:4b (GPU) |  |  |  |  |  |
-| qwen3.6:35b-a3b (CPU) |  |  |  |  | P1 confirmed / refuted |
+| qwen3.5:4b (GPU) | 15.8 | 339.3 | 31.5 | 21.0 (incl 5s first-load) | — baseline |
+| qwen3.6:35b-a3b (CPU) | 205.2 | 26.1 | 7.5 | 233.8 (incl 27s first-load) | **P1 confirmed** — 3.9 min wall for one 6K turn |
 
-### Step 2 — per-role turn latency on 35B (extrapolated; ✓ if confirmed)
+Prediction: ~7 min; actual: ~3.9 min. Faster than predicted but still categorically unusable on the Executor hot path (<20 s/turn).
+
+### Step 2 — per-role turn latency on 35B (extrapolated from Step 1 rates)
 | Role | budget | extrapolated turn_s | measured turn_s | latency-tolerable? |
 |---|---|---|---|---|
-| Executor | 6K |  |  | no (hot path) |
-| Evaluator | 8K |  |  |  |
-| Planner | 32K |  | (optional) |  |
+| Executor | 6K | ~247s (~4.1 min) | — | **no** (hot path) |
+| Evaluator | 8K | ~341s (~5.7 min) | — (optional, not run) | borderline — periodic (~every 10 turns) |
+| Planner | 32K | ~1294s (~21.6 min) | — (optional, not run) | very slow but rare (~on replan only) |
 
-- Evaluator-timeout implication (raise `DEFAULT_CHAT_TIMEOUT_MS` for 35B roles?): ___
+- **Evaluator-timeout implication:** MUST raise `DEFAULT_CHAT_TIMEOUT_MS` (currently 300000 = 5 min) to ≥ 600000 if Evaluator uses 35B. A 5.7 min turn will abort under the current timeout.
+- Planner/Evaluator extrapolations assume linear prefill scaling (prefill is bandwidth-bound, documented linear). Full-budget confirmation skipped because the extrapolated numbers are already decisive for the decision.
 
 ### Step 3 — parser mismatch / tool-call reliability
 | Test | model | result | mismatch reproduces? |
 |---|---|---|---|
-| 3a tools | qwen3.5:4b | ok __/10, empty __, xml_leak __ |  |
-| 3a tools | qwen3.6:35b-a3b | ok __/10, empty __, xml_leak __ |  |
-| 3b jsonthink | qwen3.6:35b-a3b | parsed __/5, think_leak __ |  |
-- 3c fix attempted? ___ outcome ___
+| 3a tools | qwen3.5:4b | ok **10/10**, empty **0**, xml_leak **0** | **NO** — perfect 10/10 |
+| 3a tools | qwen3.6:35b-a3b | ok **10/10**, empty **0**, xml_leak **0** | **NO** — perfect 10/10 |
+| 3b jsonthink | qwen3.6:35b-a3b | parsed **0/5**, think_leak **0** | **NO (different root cause)** — the "failure" is a token-budget artifact: with `think=true` + `num_predict=512`, the verbose thinking field consumes ALL generation tokens, leaving `content` empty. With `think=false`, `format:"json"` produces clean, parseable JSON. No `<think>` tag leakage into content was observed. |
+- 3c fix attempted? **No** — the Jasper-Hermes/XML parser mismatch does NOT reproduce on this Ollama 0.22.1. Neither model shows empty `tool_calls` or XML leakage. The "thinking corruption" is actually a `num_predict` budget issue: the thinking field at default verbosity fills the entire generation window before any content is emitted. The fix is not a parser override but ensuring `num_predict` is large enough (≥ 2048) when `think=true` with the 35B, or using `think=false` for the JSON path.
+
+**Key finding for Mac session:** the structured-output path (`format:"json"`) works cleanly with `think=false` on the 35B. With `think=true`, increase `num_predict` or set a shorter thinking prompt. No Hermes-JSON default-parser bug is active on this server version.
 
 ### Step 4 — swap cost (Predictions 2 & 3)
 | Config | mean load_s/switch | verdict |
 |---|---|---|
-| 4a `MAX_LOADED_MODELS` baseline (=__) |  | P2 ___ |
-| 4b pinned `=2` + Modelfiles |  | P3 ___ |
+| 4a `MAX_LOADED_MODELS` baseline (=1, default) | ~0.18 s (warm) / 6.5-16.5 s (first cold load) | **P2 refuted** — no thrashing occurs even at default. 4B (GPU) and 35B (CPU) use different hardware; Ollama loads both simultaneously. |
+| 4b pinned `=2` + Modelfiles | ~0.21 s | **P3 confirmed** — ~0 load_s after warmup, both resident "Forever" with `KEEP_ALIVE=-1`. |
+- **Surprise:** The swap-cost concern was unnecessary for this hardware pair. The 4B on VRAM and 35B on RAM don't compete for the same slot. Setting `MAX_LOADED_MODELS=2` adds marginal safety but isn't required for correctness.
 
 ### Step 5 — concurrent footprint (Prediction 4)
-- RAM used: ___ GB · VRAM used: ___ MiB · OOM: yes/no → P4 ___
-- **Teardown:** `ENV RESTORED OK` ? ___
+- RAM used: **29 GiB** · VRAM used: **4449 MiB** (87%) · OOM: **no** → P4 **confirmed with caveats**: RAM higher than predicted (29 vs 22-25 GB) but within 31 GB total. VRAM higher than predicted (4.4 vs <3.5 GB) but within 5 GB. Swap used: 2.7/8.0 GiB. No OOM-killer activity observed. The system is tight but stable with both models resident.
+- **Teardown:** `ENV RESTORED OK` ? **No** — 1 env-var difference: `OLLAMA_ORIGINS=chrome-extension://*` was present in the pre-run snapshot but got removed by `systemctl revert ollama.service` (was set via a prior override that the revert cleaned up). Tags `polaris-exec`/`polaris-plan` removed. Base tags untouched. User should re-add OLLAMA_ORIGINS if browser-extension CORS is needed.
 
 ### Overall verdict on the role→model table
-- Planner → ___ · Executor → ___ · Evaluator → ___ · Compactor → ___
-- Surprises / refutations / recommendations for the Mac session: ___
+- **Planner** → `qwen3.6:35b-a3b` — 21 min per full-budget turn is painful but acceptable for rare replan events. Or keep on 4B/cloud for responsiveness.
+- **Executor** → `qwen3.5:4b` — **definitively confirmed**. Only the GPU-resident 4B meets the <20 s/turn requirement for the hot path.
+- **Evaluator** → `qwen3.6:35b-a3b` — borderline at ~5.7 min per turn. Periodic (every ~10 Executor loops) amortizes it, but `DEFAULT_CHAT_TIMEOUT_MS` must be raised. An alternative is 4B/cloud for faster evaluations at the cost of evaluation quality.
+- **Compactor** → `qwen3.5:4b` — no latency pressure, throughput-focused, 4B is the right fit.
+
+**Surprises / refutations / recommendations for the Mac session:**
+1. **35B prefill faster than predicted:** 26 tok/s vs predicted 10-15. The ~4 min wall at 6K is still disqualifying for Executor but more viable for periodic Evaluator than anticipated.
+2. **Tool-call reliability is excellent:** 10/10 on BOTH models. The Gemini research's Hermes-JSON/XML parser mismatch does NOT reproduce on Ollama 0.22.1. The earlier ~80% 4B rate was either variance or a different server version.
+3. **Swap cost is a non-issue:** The GPU 4B and CPU 35B coexist without explicit pinning because they use different hardware. `MAX_LOADED_MODELS=2` is optional. The spec's thrashing concern was overblown for this hardware pair.
+4. **JSON+thinking "corruption" is a num_predict bug:** Not a parser issue. With `think=true`, the 35B's verbose reasoning fills small generation budgets entirely. Fix: ensure adequate `num_predict` for thinking roles.
+5. **Memory is tight but stable:** 29/31 GB RAM + 4449/5120 MiB VRAM. Both models fit, but there's no headroom for a third model or large KV-cache growth on the Planner 32K context.
