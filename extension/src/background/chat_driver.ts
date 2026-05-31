@@ -21,18 +21,37 @@ export interface DriverResponse {
 
 /**
  * Normalize a CloudClient response to DriverResponse shape.
- * Cloud returns { choices: [{ message: { content } }] };
- * we map that to { message: { content }, prompt_eval_count, eval_count }
- * which matches Ollama's shape.
+ * Cloud returns { choices: [{ message: { content, tool_calls? } }] };
+ * we map that to { message: { content, tool_calls? }, prompt_eval_count, eval_count }
+ * which matches Ollama's shape. tool_calls arguments strings are JSON.parsed
+ * into Record<string, unknown>; malformed JSON yields {}.
  */
 export function normalizeCloudResponse(
   response: import('./cloud_client').CloudChatResponse,
 ): DriverResponse {
+  const msg = response.choices[0]?.message;
+  const toolCalls = msg?.tool_calls?.map((tc) => ({
+    function: {
+      name: tc.function.name,
+      arguments: safeParseArgs(tc.function.arguments),
+    },
+  }));
   return {
     message: {
-      content: response.choices[0]?.message?.content,
+      content: msg?.content,
+      ...(toolCalls && toolCalls.length ? { tool_calls: toolCalls } : {}),
     },
     prompt_eval_count: response.usage?.prompt_tokens,
     eval_count: response.usage?.completion_tokens,
   };
+}
+
+/** Parse an OpenAI tool-call arguments string into an object; {} on failure. */
+function safeParseArgs(s: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(s);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
