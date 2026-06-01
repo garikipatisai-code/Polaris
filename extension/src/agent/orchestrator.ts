@@ -480,6 +480,11 @@ export class Orchestrator {
         totalTokens: after.budgets.totalTokens + result.promptTokens + result.genTokens,
       },
     });
+    if (result.thinking) {
+      await this.emit(planned.taskId, 'role_end', {
+        role: 'planner', ok: true, thinking: result.thinking,
+      });
+    }
     await this.emit(planned.taskId, 'role_end', {
       role: 'planner',
       ok: true,
@@ -788,6 +793,11 @@ export class Orchestrator {
       });
     }
 
+    if (result.thinking) {
+      await this.emit(afterBudget.taskId, 'role_end', {
+        role: 'evaluator', ok: true, thinking: result.thinking,
+      });
+    }
     await this.emit(afterBudget.taskId, 'role_end', {
       role: 'evaluator',
       ok: true,

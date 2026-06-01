@@ -42,6 +42,8 @@ export interface PlannerOutput {
   promptTokens: number;
   genTokens: number;
   retried: boolean;
+  /** Model's thinking trace (Gemma 4 reasoning), if any. */
+  thinking?: string;
 }
 
 // Zod can't directly express recursive types with full inference; cast.
@@ -116,6 +118,7 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
   let promptTokens = response.prompt_eval_count ?? estimatedPromptTokens;
   let genTokens = response.eval_count ?? 0;
   let content = response.message?.content ?? '';
+  const thinking = response.message?.thinking;
   let parsed: unknown;
   let retried = false;
 
@@ -210,6 +213,7 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
     promptTokens,
     genTokens,
     retried,
+    thinking,
   };
 }
 

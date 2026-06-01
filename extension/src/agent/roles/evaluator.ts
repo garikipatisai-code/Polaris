@@ -47,6 +47,8 @@ export interface EvaluatorOutput {
   promptTokens: number;
   genTokens: number;
   retried: boolean;
+  /** Model's thinking trace (Gemma 4 reasoning), if any. */
+  thinking?: string;
 }
 
 const EvaluatorResponseSchema = z.object({
@@ -102,6 +104,7 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
   let promptTokens = firstResp.prompt_eval_count ?? estimated;
   let genTokens = firstResp.eval_count ?? 0;
   let content = firstResp.message?.content ?? '';
+  const thinking = firstResp.message?.thinking;
   let parsed: unknown;
   let retried = false;
 
@@ -174,5 +177,6 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     promptTokens,
     genTokens,
     retried,
+    thinking,
   };
 }

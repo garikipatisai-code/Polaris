@@ -18,6 +18,7 @@ export type AnyClient = OllamaClient | CloudClient;
 export interface DriverResponse {
   message?: {
     content?: string;
+    thinking?: string;
     tool_calls?: { function: { name: string; arguments: Record<string, unknown> } }[];
   };
   prompt_eval_count?: number;

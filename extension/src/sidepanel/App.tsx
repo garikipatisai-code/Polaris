@@ -389,20 +389,20 @@ export default function App() {
     send(portRef.current, { type: 'settings.set', settings: { [key]: value } as Partial<Settings> });
   }
 
-  type ModelSource = 'default' | 'local35b' | 'cloud';
-  const LOCAL_35B = 'gemma4:26b';
+  type ModelSource = 'default' | 'local26b' | 'cloud';
+  const LOCAL_26B = 'gemma4:26b';
 
   function roleSource(role: 'planner' | 'executor' | 'evaluator'): ModelSource {
     if (settings.cloud?.[role]?.apiKey) return 'cloud';
-    if (settings.roleModels?.[role]) return 'local35b';
+    if (settings.roleModels?.[role]) return 'local26b';
     return 'default';
   }
 
   function setRoleSource(role: 'planner' | 'executor' | 'evaluator', source: ModelSource) {
     const roleModels = { ...(settings.roleModels ?? {}) };
     const cloud = { ...(settings.cloud ?? {}) };
-    if (source === 'local35b') {
-      roleModels[role] = LOCAL_35B;
+    if (source === 'local26b') {
+      roleModels[role] = LOCAL_26B;
       delete cloud[role];
     } else if (source === 'cloud') {
       delete roleModels[role];
@@ -641,7 +641,7 @@ export default function App() {
             <div className="drawer-section-head">
               <span className="drawer-section-label">Model source per role</span>
               <span className="drawer-section-hint">
-                Default is fully local. <code>Local 26B</code> uses {LOCAL_35B} for higher-quality
+                Default is fully local. <code>Local 26B</code> uses {LOCAL_26B} for higher-quality
                 reasoning (slower). <code>Cloud</code> sends PII-anonymized prompts to your own key.
               </span>
             </div>
@@ -652,8 +652,8 @@ export default function App() {
                   value={roleSource(role)}
                   onChange={(e) => setRoleSource(role, e.target.value as ModelSource)}
                 >
-                  <option value="default">Default (4B)</option>
-                  <option value="local35b">Local 26B</option>
+                  <option value="default">Default (e2b)</option>
+                  <option value="local26b">Local 26B</option>
                   <option value="cloud">Cloud (BYOK)</option>
                 </select>
                 {roleSource(role) === 'cloud' && (
@@ -890,6 +890,7 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
           <span className="tag">{String(d.role ?? '?')}</span>
           {d.retried ? <span className="retry-badge">retried</span> : null}
           {' '}{ok}{pt}{gt}
+          {d.thinking ? <CollapsibleText text={String(d.thinking)} inline cap={200} /> : null}
         </>
       );
     }
