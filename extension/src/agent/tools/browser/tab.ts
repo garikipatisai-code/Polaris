@@ -332,8 +332,8 @@ const tabOpenArgs = z.object({
 const tabOpenOutput = z.object({
   ok: z.boolean(),
   error: z.string().optional(),
-  tabId: z.number().int(),
-  url: z.string(),
+  tabId: z.number().int().optional(),
+  url: z.string().optional(),
 });
 
 export const tabOpenTool: ToolHandler<
@@ -514,9 +514,9 @@ const tabScreenshotArgs = z.object({ tabId: z.number().int() });
 const tabScreenshotOutput = z.object({
   ok: z.boolean(),
   error: z.string().optional(),
-  dataUri: z.string(),
-  widthPx: z.number().int(),
-  heightPx: z.number().int(),
+  dataUri: z.string().optional(),
+  widthPx: z.number().int().optional(),
+  heightPx: z.number().int().optional(),
 });
 
 const MIN_VISION_WIDTH_PX = 1200; // see Polaris CLAUDE.md vision notes
@@ -613,7 +613,7 @@ const tabWaitArgs = z.object({
 const tabWaitOutput = z.object({
   ok: z.boolean(),
   error: z.string().optional(),
-  status: z.union([z.literal('complete'), z.literal('loading')]),
+  status: z.union([z.literal('complete'), z.literal('loading')]).optional(),
 });
 
 export const tabWaitLoadedTool: ToolHandler<

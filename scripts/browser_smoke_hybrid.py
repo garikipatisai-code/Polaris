@@ -253,14 +253,10 @@ def action_type(page_cdp: CDP, selector: str, text: str) -> None:
         "returnByValue": True,
     })
 
-    # Dispatch one char event per character (matches tab.type's keyEvent loop)
-    for char in text:
-        page_cdp.call("Input.dispatchKeyEvent", {
-            "type": "char",
-            "text": char,
-            "key": char,
-            "windowsVirtualKeyCode": ord(char),
-        })
+    # Insert text via Input.insertText (matches tab.type's CDP sequence).
+    # This is more reliable than dispatchKeyEvent(type='char') which on
+    # Chrome 148+ may not populate input.value correctly.
+    page_cdp.call("Input.insertText", {"text": text})
 
 
 def action_click(page_cdp: CDP, selector: str) -> tuple[int, int]:
@@ -400,6 +396,7 @@ def main() -> int:
 
     args = [
         CHROME,
+        f"--window-size=1280,720",
         f"--user-data-dir={profile}",
         f"--load-extension={DIST}",
         f"--remote-debugging-port={cdp_port}",

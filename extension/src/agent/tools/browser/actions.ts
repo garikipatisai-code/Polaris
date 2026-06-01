@@ -264,12 +264,12 @@ export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeo
             type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1,
           });
 
-          // Type each character
-          for (const char of args.text) {
-            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-              type: 'char', text: char, key: char, windowsVirtualKeyCode: char.charCodeAt(0),
-            });
-          }
+          // Type via Input.insertText — inserts text into the focused element
+          // without depending on key-event processing pipelines. More reliable
+          // than dispatchKeyEvent(type:'char') across Chrome versions.
+          await chrome.debugger.sendCommand(target, 'Input.insertText', {
+            text: args.text,
+          });
 
           if (args.submit) {
             await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
@@ -346,12 +346,12 @@ export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeo
             })()`,
           });
 
-          // Type each character
-          for (const char of args.text) {
-            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-              type: 'char', text: char, key: char, windowsVirtualKeyCode: char.charCodeAt(0),
-            });
-          }
+          // Type via Input.insertText — inserts text into the focused element
+          // without depending on key-event processing pipelines. More reliable
+          // than dispatchKeyEvent(type:'char') across Chrome versions.
+          await chrome.debugger.sendCommand(target, 'Input.insertText', {
+            text: args.text,
+          });
 
           if (args.submit) {
             await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
