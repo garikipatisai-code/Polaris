@@ -19,7 +19,7 @@ export const BUDGETS: Record<Role, number> = {
 };
 
 /** Compaction fires when scratchpad reaches this fraction of the Executor budget. */
-export const COMPACT_THRESHOLD = 0.8;
+export const COMPACT_THRESHOLD = 0.3;
 
 /**
  * Compaction also fires when scratchpad has accumulated at least this many

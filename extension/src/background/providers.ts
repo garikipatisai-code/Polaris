@@ -30,10 +30,21 @@ const THINKING_NUM_PREDICT = 2048;
 /** Cloud calls are fast; matches CloudClient's default. */
 const CLOUD_TIMEOUT_MS = 60_000;
 
+/** Context window per role — matches BUDGETS in budget.ts. Without this, Ollama
+ *  defaults to 2048/4096 and silently truncates prompts. */
+const ROLE_CTX: Record<string, number> = {
+  planner: 64000,
+  executor: 16000,
+  evaluator: 32000,
+  compactor: 16000,
+};
+
 type ReasoningRole = 'planner' | 'executor' | 'evaluator' | 'compactor';
 
 export function buildProviders(settings: Settings, defaultClient: OllamaClient): ResolvedProviders {
-  const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model };
+  // Default provider (4B, used when no per-role override is set). 16K context fits
+  // in GPU with q8_0 KV cache.
+  const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model, numCtx: 16000 };
 
   const resolve = (role: ReasoningRole): ProviderConfig | undefined => {
     // Compactor stays LOCAL always (spec non-goal: no compactor-on-cloud). The
@@ -45,6 +56,7 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
         client: new CloudClient(cloud.baseUrl || 'https://api.deepseek.com/v1', cloud.apiKey),
         model: cloud.model,
         timeoutMs: CLOUD_TIMEOUT_MS,
+        numCtx: ROLE_CTX[role],
       };
     }
     const localModel = settings.roleModels?.[role];
@@ -58,6 +70,7 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
           : undefined,
         numPredict:
           role === 'planner' || role === 'evaluator' ? THINKING_NUM_PREDICT : undefined,
+        numCtx: ROLE_CTX[role],
       };
     }
     return undefined;

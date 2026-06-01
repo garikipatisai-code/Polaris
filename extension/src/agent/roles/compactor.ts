@@ -22,6 +22,7 @@ export interface CompactorInput {
   client: OllamaClient;
   model: string;
   signal?: AbortSignal;
+  numCtx?: number;
 }
 
 export interface CompactorFinding {
@@ -75,6 +76,7 @@ export async function runCompactor(input: CompactorInput): Promise<CompactorOutp
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userAnchor },
     ],
+    options: input.numCtx ? { num_ctx: input.numCtx } : undefined,
     format: 'json',
     think: false,
     signal,

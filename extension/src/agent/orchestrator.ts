@@ -96,6 +96,7 @@ export interface OrchestratorOptions {
 export class Orchestrator {
   private readonly defaultClient: AnyClient;
   private readonly defaultModel: string;
+  private readonly defaultProvider?: ProviderConfig;
   private readonly plannerProvider?: ProviderConfig;
   private readonly executorProvider?: ProviderConfig;
   private readonly evaluatorProvider?: ProviderConfig;
@@ -114,6 +115,7 @@ export class Orchestrator {
     if (!dp) throw new Error('Orchestrator: must provide either defaultProvider or client+model');
     this.defaultClient = dp.client;
     this.defaultModel = dp.model;
+    this.defaultProvider = dp;
     this.plannerProvider = opts.plannerProvider;
     this.executorProvider = opts.executorProvider;
     this.evaluatorProvider = opts.evaluatorProvider;
@@ -135,20 +137,31 @@ export class Orchestrator {
    * LLM client + model to call.
    */
   private getProvider(role: 'planner' | 'executor' | 'evaluator' | 'compactor'): ProviderConfig {
-    const providers: Record<string, ProviderConfig | undefined> = {
-      planner: this.plannerProvider,
-      executor: this.executorProvider,
-      evaluator: this.evaluatorProvider,
-      compactor: this.compactorProvider,
-    };
-    const override = providers[role];
+    const override =
+      role === 'planner' ? this.plannerProvider
+      : role === 'executor' ? this.executorProvider
+      : role === 'evaluator' ? this.evaluatorProvider
+      : this.compactorProvider;
     if (override) return override;
-    return { client: this.defaultClient, model: this.defaultModel };
+    // Fall back to defaultProvider fields (includes numCtx, timeoutMs, numPredict).
+    return {
+      client: this.defaultClient,
+      model: this.defaultModel,
+      numCtx: this.defaultProvider?.numCtx,
+      timeoutMs: this.defaultProvider?.timeoutMs,
+      numPredict: this.defaultProvider?.numPredict,
+    };
   }
 
   /** Local default provider, used as the cloud fallback target. */
   private localDefault(): ProviderConfig {
-    return { client: this.defaultClient, model: this.defaultModel };
+    return {
+      client: this.defaultClient,
+      model: this.defaultModel,
+      numCtx: this.defaultProvider?.numCtx,
+      timeoutMs: this.defaultProvider?.timeoutMs,
+      numPredict: this.defaultProvider?.numPredict,
+    };
   }
 
   /** Fallback for a role: the local default IFF the role's provider is cloud. */
@@ -861,6 +874,7 @@ export class Orchestrator {
       existingKeys,
       client: compProv.client as OllamaClient,
       model: compProv.model,
+      numCtx: compProv.numCtx,
       signal: this.abort?.signal,
     });
     void recordMetric({
