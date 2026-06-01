@@ -1,9 +1,10 @@
 // Tool lifecycle utilities for M3 browser tools.
 //
-// Browser tools (chrome.debugger, chrome.tabs, network calls) have failure
-// modes that pure mock tools don't: timeouts, navigation failures, permission
-// denials, tab crashes, model-incompatible structured responses. This module
-// gives those a typed contract the agent loop can react to:
+// Error thrown by browser tools for UNRECOVERABLE failures only.
+// Recoverable failures (element not found, timeout, domain blocked)
+// should return structured {ok: false, error} instead of throwing.
+// Fatal errors propagate to the orchestrator and transition the
+// task to ABORTED with a visible error in the UI.
 //
 //   throw new BrowserToolError(msg, { fatal: true })
 //     → registry.dispatch returns { ok:false, fatal:true, error }

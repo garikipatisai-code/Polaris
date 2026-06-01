@@ -64,7 +64,6 @@ export const tabClickTool: ToolHandler<
   description:
     'Click on an element by its index from aria.extract (e.g. index:12). ' +
     'PREFERRED — uses cached bounding box for coordinate-based click. ' +
-    'Falls back to backendDOMNodeId or CSS selector if index not provided. ' +
     'Gated by domain tier: must be at least "click-only".',
   argsSchema: tabClickArgs,
   outputSchema: tabClickOutput,
@@ -215,9 +214,8 @@ const tabTypeOutput = z.object({
 export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeof tabTypeOutput>> = {
   name: 'tab.type',
   description:
-    'Type text into an input element by index from aria.extract (e.g. index:12, text:"hello"). ' +
-    'PREFERRED over CSS selector. Clicks to focus first. ' +
-    'Gated by domain tier: must be "full-action".',
+    'Type text into an input element by index from aria.extract (e.g. index:12). ' +
+    'Clicks the element first to focus. Gated by domain tier: must be "full-action".',
   argsSchema: tabTypeArgs,
   outputSchema: tabTypeOutput,
   parametersJSON: {
