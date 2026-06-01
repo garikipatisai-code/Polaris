@@ -90,7 +90,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
       { role: 'user', content: userAnchor },
     ],
     tools: toolDefs,
-    think: true,
+    think: false,
     signal,
   }, input.fallback);
   let toolCalls = first.message?.tool_calls ?? [];
@@ -127,7 +127,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
     const second = await driveChatOnce(provider, {
       messages: retryMessages,
       tools: toolDefs,
-      think: true,
+      think: false,
       signal,
     }, input.fallback);
     toolCalls = second.message?.tool_calls ?? [];

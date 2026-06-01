@@ -71,7 +71,7 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
           : role === 'evaluator' ? EVALUATOR_26B_TIMEOUT_MS
           : undefined,
         numPredict:
-          role === 'planner' || role === 'evaluator' || role === 'executor' ? THINKING_NUM_PREDICT : undefined,
+          role === 'planner' || role === 'evaluator' ? THINKING_NUM_PREDICT : undefined,
         numCtx: ROLE_CTX[role],
         options: isLarge ? { num_gpu: 0 } : undefined,
       };
