@@ -1,9 +1,13 @@
-// Tests for the page-action tools (tab.click, future tab.type, tab.select).
+// Tests for the page-action tools (tab.click, tab.type, tab.select).
 //
 // Each test installs module-level mocks for chrome.tabs.get and the
 // chrome.debugger API via beforeEach, with domain tier pre-configured
 // so assertCanAct passes. Individual tests can override mockTabsGet or
 // mockSendCommand to test failure modes.
+//
+// Non-fatal errors are now returned as structured { ok: false, error: "..." }
+// instead of thrown — tests that previously expected rejects.toThrow now
+// check result.ok and result.error.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tabClickTool, tabTypeTool, tabSelectTool } from '../src/agent/tools/browser/actions';
@@ -55,16 +59,17 @@ describe('tab.click', () => {
     expect(result.action).toBe('click');
     expect(result.x).toBe(55); // center of 10..100
     expect(result.y).toBe(40); // center of 20..60
+    expect(result.ok).toBe(true);
   });
 
-  it('throws for invalid tabId', async () => {
+  it('returns structured error for invalid tabId', async () => {
     mockTabsGet.mockRejectedValue(new Error('tab not found'));
-    await expect(
-      tabClickTool.execute(
-        { tabId: 999, backendDOMNodeId: 7 },
-        { taskId: 't1', stepId: null },
-      ),
-    ).rejects.toThrow('tab.click: tab 999 not found');
+    const result = await tabClickTool.execute(
+      { tabId: 999, backendDOMNodeId: 7 },
+      { taskId: 't1', stepId: null },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('tab.click: tab 999 not found');
   });
 
   it('attaches and detaches debugger', async () => {
@@ -95,6 +100,7 @@ describe('tab.click', () => {
       { taskId: 't1', stepId: null },
     );
     expect(result.action).toBe('click');
+    expect(result.ok).toBe(true);
     // Verify debugger was called with 'right' button
     const mousePressedCalls = mockSendCommand.mock.calls.filter(
       (c: unknown[]) => (c as [unknown, string])[1] === 'Input.dispatchMouseEvent',
@@ -135,21 +141,21 @@ describe('tab.click', () => {
     expect(result.y).toBe(70);  // center of 40..100
   });
 
-  it('throws when CSS selector matches nothing', async () => {
+  it('returns structured error when CSS selector matches nothing', async () => {
     mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
       if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
       if (method === 'DOM.querySelector') return { nodeId: 0 };
       return {};
     });
-    await expect(
-      tabClickTool.execute(
-        { tabId: 42, selector: '.nonexistent' },
-        { taskId: 't1', stepId: null },
-      ),
-    ).rejects.toThrow('tab.click: selector ".nonexistent" matched no elements');
+    const result = await tabClickTool.execute(
+      { tabId: 42, selector: '.nonexistent' },
+      { taskId: 't1', stepId: null },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('matched no elements');
   });
 
-  it('throws when element has no visible bounding box', async () => {
+  it('returns structured error when element has no visible bounding box', async () => {
     mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
       if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
       if (method === 'DOM.resolveNode') return { object: { objectId: 'obj-1' } };
@@ -158,12 +164,12 @@ describe('tab.click', () => {
       if (method === 'DOM.getContentQuads') return { quads: [] };
       return {};
     });
-    await expect(
-      tabClickTool.execute(
-        { tabId: 42, backendDOMNodeId: 7 },
-        { taskId: 't1', stepId: null },
-      ),
-    ).rejects.toThrow('tab.click: element has no visible bounding box');
+    const result = await tabClickTool.execute(
+      { tabId: 42, backendDOMNodeId: 7 },
+      { taskId: 't1', stepId: null },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('no visible bounding box');
   });
 
   it('rejects click on a read-only domain', async () => {
@@ -267,6 +273,7 @@ describe('tab.type', () => {
     expect(result.action).toBe('type');
     expect(result.charsTyped).toBe(5);
     expect(result.submitted).toBe(false);
+    expect(result.ok).toBe(true);
   });
 
   it('presses Enter when submit=true', async () => {
@@ -274,6 +281,7 @@ describe('tab.type', () => {
       { tabId: 42, selector: '#search', text: 'query', submit: true },
       { taskId: 't1', stepId: null },
     );
+    expect(result.ok).toBe(true);
     expect(result.submitted).toBe(true);
     const enterCalls = mockSendCommand.mock.calls.filter(
       (c: unknown[]) => (c[1] as string) === 'Input.dispatchKeyEvent' && (c[2] as Record<string, unknown>)?.key === 'Enter',
@@ -281,16 +289,18 @@ describe('tab.type', () => {
     expect(enterCalls.length).toBe(2);
   });
 
-  it('throws for empty selector match', async () => {
+  it('returns structured error for empty selector match', async () => {
     mockSendCommand.mockImplementation(async (_target: unknown, method: string) => {
       if (method === 'DOM.querySelector') return { nodeId: 0 };
       if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
       return {};
     });
-    await expect(tabTypeTool.execute(
+    const result = await tabTypeTool.execute(
       { tabId: 42, selector: '#nonexistent', text: 'x' },
       { taskId: 't1', stepId: null },
-    )).rejects.toThrow('matched no elements');
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('matched no elements');
   });
 
   it('has correct name', () => {
@@ -315,14 +325,17 @@ describe('tab.select', () => {
     );
     expect(result.action).toBe('select');
     expect(result.value).toBe('price-asc');
+    expect(result.ok).toBe(true);
   });
 
-  it('throws when element not found', async () => {
+  it('returns structured error when element not found', async () => {
     mockSendCommand.mockResolvedValue({ result: { value: { ok: false, error: 'element not found' } } });
-    await expect(tabSelectTool.execute(
+    const result = await tabSelectTool.execute(
       { tabId: 42, selector: '#missing', value: 'x' },
       { taskId: 't1', stepId: null },
-    )).rejects.toThrow('element not found');
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('element not found');
   });
 
   it('has correct name', () => {

@@ -6,30 +6,27 @@
 // can read any page but needs explicit user trust to mutate it.
 //
 // Element resolution paths (in order of preference):
-//   1. backendDOMNodeId (from aria.extract) — prefer this; it avoids the DOM
-//      tree walk and is resilient to page DOM renames between ARIA and action.
-//   2. CSS selector — fallback when the model constructs a selector from
+//   1. index (from aria.extract) — prefer this; uses cached bounding box directly,
+//      skipping the DOM tree walk entirely. Fastest and most reliable.
+//   2. backendDOMNodeId (from aria.extract) — avoids the DOM tree walk and is
+//      resilient to page DOM renames between ARIA and action.
+//   3. CSS selector — fallback when the model constructs a selector from
 //      visual information.
 //
 // CDP flow (exactly):
 //   1. chrome.tabs.get(tabId) -> url + status
-//   2. assertCanAct(url, required-ter)
-//   3. chrome.debugger.attach({tabId}, '1.3')
-//   4. DOM.getDocument (always — initialises the DOM agent for this session)
-//   5. If backendDOMNodeId provided:
-//        DOM.resolveNode -> DOM.requestNode -> nodeId
-//      If selector provided:
-//        DOM.querySelector (using document nodeId from step 4) -> nodeId
-//   6. DOM.scrollIntoViewIfNeeded (best-effort, so below-fold elements are in viewport)
-//   7. DOM.getContentQuads -> quads
-//   8. Compute click center: x0 + (offsetX ?? width/2), y0 + (offsetY ?? height/2)
-//   9. Input.dispatchMouseEvent(mousePressed) -> Input.dispatchMouseEvent(mouseReleased)
-//  10. chrome.debugger.detach({tabId})  (in finally block)
+//   2. assertCanAct(url, required-tier)
+//   3. If index provided: look up cached bbox from aria_types -> compute center
+//      -> dispatch mouse events directly (no DOM resolution)
+//   4. Otherwise: chrome.debugger.attach -> DOM resolution -> scrollIntoView ->
+//      getContentQuads -> dispatch -> detach
+//   5. Non-fatal errors return { ok: false, error: "..." } instead of throwing
 
 import { z } from 'zod';
 import type { ToolHandler } from '../registry';
 import { BrowserToolError, withBrowserTimeout } from './lifecycle';
 import { assertCanAct } from '../../domain_tiers';
+import { getCachedBBox } from './aria_types';
 
 // ──────────────────────────────────────────────────────────────────────
 // tab.click
@@ -38,6 +35,7 @@ import { assertCanAct } from '../../domain_tiers';
 const tabClickArgs = z
   .object({
     tabId: z.number().int(),
+    index: z.number().int().positive().optional(),
     backendDOMNodeId: z.number().int().optional(),
     selector: z.string().min(1).optional(),
     button: z.enum(['left', 'right', 'middle']).optional(),
@@ -46,14 +44,16 @@ const tabClickArgs = z
     offsetY: z.number().int().optional(),
   })
   .refine(
-    (d) => d.backendDOMNodeId !== undefined || d.selector !== undefined,
-    { message: 'must provide either backendDOMNodeId or a CSS selector' },
+    (d) => d.index !== undefined || d.backendDOMNodeId !== undefined || d.selector !== undefined,
+    { message: 'must provide index, backendDOMNodeId, or a CSS selector' },
   );
 
 const tabClickOutput = z.object({
   action: z.literal('click'),
   x: z.number().int(),
   y: z.number().int(),
+  ok: z.boolean(),
+  error: z.string().optional(),
 });
 
 export const tabClickTool: ToolHandler<
@@ -62,15 +62,20 @@ export const tabClickTool: ToolHandler<
 > = {
   name: 'tab.click',
   description:
-    'Click on an element in a tab. PREFER using backendDOMNodeId from aria.extract (more reliable). ' +
-    'CSS selector fallback also works. Call aria.extract on the tab first to discover element IDs. ' +
-    'Gated by domain tier: the target domain must be at least "click-only".',
+    'Click on an element by its index from aria.extract (e.g. index:12). ' +
+    'PREFERRED — uses cached bounding box for coordinate-based click. ' +
+    'Falls back to backendDOMNodeId or CSS selector if index not provided. ' +
+    'Gated by domain tier: must be at least "click-only".',
   argsSchema: tabClickArgs,
   outputSchema: tabClickOutput,
   parametersJSON: {
     type: 'object',
     properties: {
       tabId: { type: 'integer', description: 'Tab id from tab.open or tab.list.' },
+      index: {
+        type: 'integer',
+        description: 'Element index from aria.extract output. PREFERRED — uses cached bounding box directly.',
+      },
       backendDOMNodeId: {
         type: 'integer',
         description: 'backendDOMNodeId from aria.extract output. Prefer this over selector.',
@@ -108,47 +113,74 @@ export const tabClickTool: ToolHandler<
       try {
         tab = await chrome.tabs.get(args.tabId);
       } catch (e) {
-        throw new BrowserToolError(
-          `tab.click: tab ${args.tabId} not found: ${(e as Error).message}`,
-          { fatal: false },
-        );
+        return { action: 'click' as const, x: 0, y: 0, ok: false, error: `tab.click: tab ${args.tabId} not found: ${(e as Error).message}` };
       }
       const url = tab.url ?? '';
       await assertCanAct(url, 'click-only');
 
+      // Path 1: index-based — use cached bounding box directly (no DOM resolution)
+      if (args.index !== undefined) {
+        const bbox = getCachedBBox(args.tabId, args.index);
+        if (!bbox) {
+          return { action: 'click' as const, x: 0, y: 0, ok: false, error: `element [${args.index}] not in cache — call aria.extract first` };
+        }
+        const cx = Math.round(bbox.x + bbox.width / 2);
+        const cy = Math.round(bbox.y + bbox.height / 2);
+
+        const targetAttach: { tabId: number } = { tabId: args.tabId };
+        try {
+          await chrome.debugger.attach(targetAttach, '1.3');
+          await chrome.debugger.sendCommand(targetAttach, 'Input.dispatchMouseEvent', {
+            type: 'mousePressed', x: cx, y: cy, button: args.button ?? 'left', clickCount: args.clickCount ?? 1,
+          });
+          await chrome.debugger.sendCommand(targetAttach, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased', x: cx, y: cy, button: args.button ?? 'left', clickCount: args.clickCount ?? 1,
+          });
+          return { action: 'click' as const, x: cx, y: cy, ok: true };
+        } finally {
+          try { await chrome.debugger.detach(targetAttach); } catch { /* best-effort */ }
+        }
+      }
+
+      // Path 2: backendDOMNodeId or selector — requires CDP DOM resolution
       const targetAttach: { tabId: number } = { tabId: args.tabId };
       try {
         await chrome.debugger.attach(targetAttach, '1.3');
 
-        // Resolve coordinates
-        const { x, y } = await resolveElementCoords(
-          args.tabId,
-          args.backendDOMNodeId,
-          args.selector,
-          args.offsetX,
-          args.offsetY,
-        );
+        try {
+          const { x, y } = await resolveElementCoords(
+            args.tabId,
+            args.backendDOMNodeId,
+            args.selector,
+            args.offsetX,
+            args.offsetY,
+          );
 
-        // Dispatch click
-        const button = args.button ?? 'left';
-        const clickCount = args.clickCount ?? 1;
+          const button = args.button ?? 'left';
+          const clickCount = args.clickCount ?? 1;
 
-        await chrome.debugger.sendCommand(targetAttach, 'Input.dispatchMouseEvent', {
-          type: 'mousePressed',
-          x: Math.round(x),
-          y: Math.round(y),
-          button,
-          clickCount,
-        });
-        await chrome.debugger.sendCommand(targetAttach, 'Input.dispatchMouseEvent', {
-          type: 'mouseReleased',
-          x: Math.round(x),
-          y: Math.round(y),
-          button,
-          clickCount,
-        });
+          await chrome.debugger.sendCommand(targetAttach, 'Input.dispatchMouseEvent', {
+            type: 'mousePressed',
+            x: Math.round(x),
+            y: Math.round(y),
+            button,
+            clickCount,
+          });
+          await chrome.debugger.sendCommand(targetAttach, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased',
+            x: Math.round(x),
+            y: Math.round(y),
+            button,
+            clickCount,
+          });
 
-        return { action: 'click' as const, x: Math.round(x), y: Math.round(y) };
+          return { action: 'click' as const, x: Math.round(x), y: Math.round(y), ok: true };
+        } catch (e) {
+          if (e instanceof BrowserToolError && !e.fatal) {
+            return { action: 'click' as const, x: 0, y: 0, ok: false, error: e.message };
+          }
+          throw e;
+        }
       } finally {
         try {
           await chrome.debugger.detach(targetAttach);
@@ -166,7 +198,8 @@ export const tabClickTool: ToolHandler<
 
 const tabTypeArgs = z.object({
   tabId: z.number().int(),
-  selector: z.string().min(1),
+  index: z.number().int().positive().optional(),
+  selector: z.string().min(1).optional(),
   text: z.string(),
   submit: z.boolean().optional(),
 });
@@ -175,22 +208,31 @@ const tabTypeOutput = z.object({
   action: z.literal('type'),
   charsTyped: z.number().int(),
   submitted: z.boolean(),
+  ok: z.boolean(),
+  error: z.string().optional(),
 });
 
 export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeof tabTypeOutput>> = {
   name: 'tab.type',
-  description: 'Type text into an input element. Use a CSS selector obtained from aria.extract (call aria.extract first to discover the page structure and selectors). Clears existing content first. Gated by domain tier: must be "full-action".',
+  description:
+    'Type text into an input element by index from aria.extract (e.g. index:12, text:"hello"). ' +
+    'PREFERRED over CSS selector. Clicks to focus first. ' +
+    'Gated by domain tier: must be "full-action".',
   argsSchema: tabTypeArgs,
   outputSchema: tabTypeOutput,
   parametersJSON: {
     type: 'object',
     properties: {
       tabId: { type: 'integer', description: 'Tab id.' },
-      selector: { type: 'string', description: 'CSS selector for the input element.' },
+      index: {
+        type: 'integer',
+        description: 'Element index from aria.extract. PREFERRED — clicks to focus before typing.',
+      },
+      selector: { type: 'string', description: 'CSS selector for the input element (fallback).' },
       text: { type: 'string', description: 'Text to type.' },
       submit: { type: 'boolean', description: 'Press Enter after typing. Default false.' },
     },
-    required: ['tabId', 'selector', 'text'],
+    required: ['tabId', 'text'],
   },
   execute: async (args) => {
     return withBrowserTimeout(async () => {
@@ -198,83 +240,137 @@ export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeo
       try {
         tab = await chrome.tabs.get(args.tabId);
       } catch (e) {
-        throw new BrowserToolError(`tab.type: tab ${args.tabId} not found: ${(e as Error).message}`, { fatal: false });
+        return { action: 'type' as const, charsTyped: 0, submitted: false, ok: false, error: `tab.type: tab ${args.tabId} not found: ${(e as Error).message}` };
       }
       await assertCanAct(tab.url ?? '', 'full-action');
 
       const target: { tabId: number } = { tabId: args.tabId };
+
+      // Path 1: index-based — focus by clicking cached bbox, then type
+      if (args.index !== undefined) {
+        const bbox = getCachedBBox(args.tabId, args.index);
+        if (!bbox) {
+          return { action: 'type' as const, charsTyped: 0, submitted: false, ok: false, error: `element [${args.index}] not in cache — call aria.extract first` };
+        }
+        const cx = Math.round(bbox.x + bbox.width / 2);
+        const cy = Math.round(bbox.y + bbox.height / 2);
+
+        try {
+          await chrome.debugger.attach(target, '1.3');
+
+          // Click to focus
+          await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+            type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1,
+          });
+          await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1,
+          });
+
+          // Type each character
+          for (const char of args.text) {
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'char', text: char, key: char, windowsVirtualKeyCode: char.charCodeAt(0),
+            });
+          }
+
+          if (args.submit) {
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'keyDown', windowsVirtualKeyCode: 13, key: 'Enter',
+            });
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'keyUp', windowsVirtualKeyCode: 13, key: 'Enter',
+            });
+          }
+
+          return { action: 'type' as const, charsTyped: args.text.length, submitted: args.submit ?? false, ok: true };
+        } finally {
+          try { await chrome.debugger.detach(target); } catch { /* best-effort */ }
+        }
+      }
+
+      // Path 2: selector-based — existing DOM query + evaluate logic
+      if (!args.selector) {
+        return { action: 'type' as const, charsTyped: 0, submitted: false, ok: false, error: 'tab.type: must provide index or selector' };
+      }
       try {
         await chrome.debugger.attach(target, '1.3');
 
-        const docResult = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 });
-        const documentNodeId = (docResult as { root?: { nodeId: number } })?.root?.nodeId;
-        if (typeof documentNodeId !== 'number') {
-          throw new BrowserToolError('tab.type: could not get document', { fatal: true });
-        }
-        const queryResult = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
-          nodeId: documentNodeId,
-          selector: args.selector,
-        });
-        let elNodeId = (queryResult as { nodeId: number }).nodeId;
-        if (!elNodeId) {
-          // Fallback: try common search/input selectors when the model guesses wrong
-          const fallbackSelectors = [
-            'input[type="search"]',
-            'input[type="text"]',
-            '#twotabsearchtextbox',
-            '[role="combobox"]',
-            '[role="searchbox"]',
-            'input:not([type="hidden"])',
-          ];
-          for (const fb of fallbackSelectors) {
-            const fbResult = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
-              nodeId: documentNodeId,
-              selector: fb,
-            });
-            const fbNodeId = (fbResult as { nodeId: number }).nodeId;
-            if (fbNodeId) {
-              elNodeId = fbNodeId;
-              console.warn(`[polaris] tab.type: selector "${args.selector}" not found; fell back to "${fb}"`);
-              break;
-            }
+        try {
+          const docResult = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 });
+          const documentNodeId = (docResult as { root?: { nodeId: number } })?.root?.nodeId;
+          if (typeof documentNodeId !== 'number') {
+            throw new BrowserToolError('tab.type: could not get document', { fatal: true });
           }
+          const queryResult = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
+            nodeId: documentNodeId,
+            selector: args.selector!,
+          });
+          let elNodeId = (queryResult as { nodeId: number }).nodeId;
           if (!elNodeId) {
-            throw new BrowserToolError(`tab.type: selector "${args.selector}" matched no elements`, { fatal: false });
-          }
-        }
-
-        // Clear existing content via Runtime.evaluate (handles both empty
-        // and pre-filled inputs), then focus the element.
-        await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
-          expression: `(() => {
-            const el = document.querySelector(${JSON.stringify(args.selector)});
-            if (!el) return;
-            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-              el.value = '';
-            } else if (el.isContentEditable) {
-              el.textContent = '';
+            // Fallback: try common search/input selectors when the model guesses wrong
+            const fallbackSelectors = [
+              'input[type="search"]',
+              'input[type="text"]',
+              '#twotabsearchtextbox',
+              '[role="combobox"]',
+              '[role="searchbox"]',
+              'input:not([type="hidden"])',
+            ];
+            for (const fb of fallbackSelectors) {
+              const fbResult = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
+                nodeId: documentNodeId,
+                selector: fb,
+              });
+              const fbNodeId = (fbResult as { nodeId: number }).nodeId;
+              if (fbNodeId) {
+                elNodeId = fbNodeId;
+                console.warn(`[polaris] tab.type: selector "${args.selector}" not found; fell back to "${fb}"`);
+                break;
+              }
             }
-            el.focus();
-          })()`,
-        });
+            if (!elNodeId) {
+              throw new BrowserToolError(`tab.type: selector "${args.selector}" matched no elements`, { fatal: false });
+            }
+          }
 
-        // Type each character
-        for (const char of args.text) {
-          await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-            type: 'char', text: char, key: char, windowsVirtualKeyCode: char.charCodeAt(0),
+          // Clear existing content via Runtime.evaluate (handles both empty
+          // and pre-filled inputs), then focus the element.
+          await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+            expression: `(() => {
+              const el = document.querySelector(${JSON.stringify(args.selector)});
+              if (!el) return;
+              if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+                el.value = '';
+              } else if (el.isContentEditable) {
+                el.textContent = '';
+              }
+              el.focus();
+            })()`,
           });
+
+          // Type each character
+          for (const char of args.text) {
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'char', text: char, key: char, windowsVirtualKeyCode: char.charCodeAt(0),
+            });
+          }
+
+          if (args.submit) {
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'keyDown', windowsVirtualKeyCode: 13, key: 'Enter',
+            });
+            await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+              type: 'keyUp', windowsVirtualKeyCode: 13, key: 'Enter',
+            });
+          }
+
+          return { action: 'type' as const, charsTyped: args.text.length, submitted: args.submit ?? false, ok: true };
+        } catch (e) {
+          if (e instanceof BrowserToolError && !e.fatal) {
+            return { action: 'type' as const, charsTyped: 0, submitted: false, ok: false, error: e.message };
+          }
+          throw e;
         }
-
-        if (args.submit) {
-          await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-            type: 'keyDown', windowsVirtualKeyCode: 13, key: 'Enter',
-          });
-          await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-            type: 'keyUp', windowsVirtualKeyCode: 13, key: 'Enter',
-          });
-        }
-
-        return { action: 'type', charsTyped: args.text.length, submitted: args.submit ?? false };
       } finally {
         try { await chrome.debugger.detach(target); } catch { /* best-effort */ }
       }
@@ -296,6 +392,8 @@ const tabSelectOutput = z.object({
   action: z.literal('select'),
   selector: z.string(),
   value: z.string(),
+  ok: z.boolean(),
+  error: z.string().optional(),
 });
 
 export const tabSelectTool: ToolHandler<z.infer<typeof tabSelectArgs>, z.infer<typeof tabSelectOutput>> = {
@@ -318,7 +416,7 @@ export const tabSelectTool: ToolHandler<z.infer<typeof tabSelectArgs>, z.infer<t
       try {
         tab = await chrome.tabs.get(args.tabId);
       } catch (e) {
-        throw new BrowserToolError(`tab.select: tab ${args.tabId} not found`, { fatal: false });
+        return { action: 'select' as const, selector: args.selector, value: args.value, ok: false, error: `tab.select: tab ${args.tabId} not found: ${(e as Error).message}` };
       }
       await assertCanAct(tab.url ?? '', 'click-only');
 
@@ -342,10 +440,10 @@ export const tabSelectTool: ToolHandler<z.infer<typeof tabSelectArgs>, z.infer<t
 
         const outcome = (result as { result?: { value?: { ok: boolean; error?: string } } })?.result?.value;
         if (!outcome?.ok) {
-          throw new BrowserToolError(`tab.select: ${outcome?.error ?? 'evaluation failed'}`, { fatal: false });
+          return { action: 'select' as const, selector: args.selector, value: args.value, ok: false, error: `tab.select: ${outcome?.error ?? 'evaluation failed'}` };
         }
 
-        return { action: 'select', selector: args.selector, value: args.value };
+        return { action: 'select' as const, selector: args.selector, value: args.value, ok: true };
       } finally {
         try { await chrome.debugger.detach(target); } catch { /* best-effort */ }
       }
