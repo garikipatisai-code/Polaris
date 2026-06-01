@@ -6,7 +6,7 @@
 import { ToolRegistry } from './registry';
 import { echoTool, addTool, sumTool, delayTool, finishTool, nextStepTool } from './core';
 import { memoryReadTool, memoryWriteTool, memoryListTool } from './memory';
-import { searchTool } from './browser/search';
+import { searchTool, searchNavigateTool } from './browser/search';
 import { ariaExtractTool } from './browser/aria';
 import {
   tabOpenTool,
@@ -35,6 +35,7 @@ export function createDefaultRegistry(): ToolRegistry {
   // chrome.tabs / chrome.debugger). They throw BrowserToolError({fatal:true})
   // if invoked outside the extension, so the orchestrator can react cleanly.
   reg.register(searchTool);
+  reg.register(searchNavigateTool);
   reg.register(ariaExtractTool);
   reg.register(tabOpenTool);
   reg.register(tabCloseTool);
@@ -54,7 +55,7 @@ export { ToolRegistry } from './registry';
 export type { ToolHandler, ToolContext } from './registry';
 export { echoTool, addTool, sumTool, delayTool, finishTool, nextStepTool } from './core';
 export { memoryWriteTool, memoryReadTool, memoryListTool } from './memory';
-export { searchTool, parseDuckDuckGoResults } from './browser/search';
+export { searchTool, searchNavigateTool, parseDuckDuckGoResults } from './browser/search';
 export { ariaExtractTool, simplifyAxTree } from './browser/aria';
 export {
   tabOpenTool,

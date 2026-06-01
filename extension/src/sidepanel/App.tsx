@@ -898,7 +898,9 @@ function renderEvent(e: AgentEventPayload): JSX.Element {
           <span className="tag">{String(d.role ?? '?')}</span>
           {d.retried ? <span className="retry-badge">retried</span> : null}
           {' '}{ok}{pt}{gt}
-          {d.thinking ? <CollapsibleText text={String(d.thinking)} inline cap={200} /> : null}
+          {d.thinking ? (
+            <div className="thinking-trace"><CollapsibleText text={String(d.thinking)} cap={300} /></div>
+          ) : null}
         </>
       );
     }

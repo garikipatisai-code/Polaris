@@ -588,6 +588,15 @@ button { font-family: inherit; }
   padding-left: 16px;
 }
 .agent-event-pending { color: var(--text-muted); }
+.thinking-trace {
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: var(--bg-secondary, #f5f5f5);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
 
 .retry-badge {
   display: inline-block;

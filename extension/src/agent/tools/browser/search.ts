@@ -301,3 +301,67 @@ export const searchTool: ToolHandler<SearchArgs, SearchOutput> = {
     return { results: all };
   },
 };
+
+// ──────────────────────────────────────────────────────────────────────────
+// search.navigate — composite: search + open first result in a tab
+// ──────────────────────────────────────────────────────────────────────────
+
+const searchNavArgs = z.object({
+  query: z.string().min(1).max(500),
+});
+
+const searchNavOutput = z.object({
+  tabId: z.number().int(),
+  title: z.string(),
+  url: z.string(),
+});
+
+export const searchNavigateTool: ToolHandler<
+  z.infer<typeof searchNavArgs>,
+  z.infer<typeof searchNavOutput>
+> = {
+  name: 'search.navigate',
+  description:
+    'Search DuckDuckGo for the given query and open the first result in a new tab. ' +
+    'Returns the tabId, title, and URL. Use this instead of search + tab.open — ' +
+    'it avoids long URLs that models struggle to reproduce.',
+  argsSchema: searchNavArgs,
+  outputSchema: searchNavOutput,
+  parametersJSON: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 500,
+        description: 'The search query.',
+      },
+    },
+    required: ['query'],
+  },
+  execute: async (args) => {
+    // 1. Search
+    const url = new URL(DDG_HTML_ENDPOINT);
+    url.searchParams.set('q', args.query);
+    const html = await withBrowserTimeout(async () => {
+      const response = await fetch(url.toString(), {
+        method: 'GET',
+        headers: { Accept: 'text/html,application/xhtml+xml' },
+      });
+      if (!response.ok) throw new BrowserToolError(`search HTTP ${response.status}`, { fatal: false });
+      return response.text();
+    }, FETCH_TIMEOUT_MS, 'search.navigate');
+    const results = parseDuckDuckGoResults(html, 1);
+    if (results.length === 0) {
+      throw new BrowserToolError(`search.navigate: no results for "${args.query}"`, { fatal: false });
+    }
+    const { url: targetUrl, title } = results[0];
+
+    // 2. Open tab (validateNavUrl handles scheme auto-prepend)
+    const tab = await chrome.tabs.create({ url: targetUrl });
+    if (typeof tab.id !== 'number') {
+      throw new BrowserToolError('search.navigate: tab was not created', { fatal: true });
+    }
+    return { tabId: tab.id, title, url: targetUrl };
+  },
+};

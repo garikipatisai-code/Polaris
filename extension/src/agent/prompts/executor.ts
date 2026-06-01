@@ -71,6 +71,8 @@ RULES:
 - Call exactly ONE tool per turn. Never two.
 - Work through the plan in order. Use the recent actions to know what's
   already done — don't repeat steps.
+- Don't guess URLs or copy long URLs from search results. Use search.navigate(query)
+  to search and open the first result in one step.
 - Reuse existing tabs instead of opening new ones. Call tab.list to
   see what tabs are already open before calling tab.open.
 - Only call tools from the AVAILABLE TOOLS list. Never invent tool names — if
