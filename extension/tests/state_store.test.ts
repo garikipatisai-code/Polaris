@@ -32,7 +32,7 @@ describe('state_store: lifecycle', () => {
     expect(state.goal.text).toBe('test goal');                  // trimmed
     expect(state.phase).toBe('PLANNING');
     expect(state.plan.rootSteps).toEqual([]);
-    expect(state.budgets.executor.max).toBe(16384);
+    expect(state.budgets.executor.max).toBe(131072);
     expect(state.breaker.totalReplans).toBe(0);
     expect(state.turnsOnCurrentStep).toBe(0);
   });
@@ -111,9 +111,9 @@ describe('state_store: forward-fill migration on loadHot', () => {
         goal: { text: 'old', successCriteria: [], createdAt: 0 },
         plan: { rootSteps: [], revision: 0, generatedAt: 0 },
         budgets: {
-          executor: { used: 0, max: 6000 },
-          planner: { used: 0, max: 32000 },
-          evaluator: { used: 0, max: 8000 },
+          executor: { used: 0, max: 131072 },
+          planner: { used: 0, max: 262144 },
+          evaluator: { used: 0, max: 262144 },
           totalTokens: 0,
         },
         visited: { hashes: [] },

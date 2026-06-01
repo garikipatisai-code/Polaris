@@ -30,21 +30,22 @@ const THINKING_NUM_PREDICT = 2048;
 /** Cloud calls are fast; matches CloudClient's default. */
 const CLOUD_TIMEOUT_MS = 60_000;
 
-/** Context window per role — matches BUDGETS in budget.ts. Without this, Ollama
- *  defaults to 2048/4096 and silently truncates prompts. */
+/** Context window per role — set to model-native maximums. Gemma 4's GQA and
+ *  cross-layer KV sharing make these fit easily (e2b 128K KV cache ~960 MB at
+ *  q8_0; 26B 256K KV cache ~640 MB at q8_0). */
 const ROLE_CTX: Record<string, number> = {
-  planner: 65536,
-  executor: 16384,
-  evaluator: 65536,
-  compactor: 16384,
+  planner: 262144,
+  executor: 131072,
+  evaluator: 262144,
+  compactor: 131072,
 };
 
 type ReasoningRole = 'planner' | 'executor' | 'evaluator' | 'compactor';
 
 export function buildProviders(settings: Settings, defaultClient: OllamaClient): ResolvedProviders {
-  // Default provider (e2b, used when no per-role override is set). 16K context fits
-  // in GPU with q8_0 KV cache.
-  const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model, numCtx: 16384 };
+  // Default provider (e2b, used when no per-role override is set). 128K context
+  // fits in GPU with q8_0 KV cache (~960 MB).
+  const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model, numCtx: 131072 };
 
   const resolve = (role: ReasoningRole): ProviderConfig | undefined => {
     // Compactor stays LOCAL always (spec non-goal: no compactor-on-cloud). The
