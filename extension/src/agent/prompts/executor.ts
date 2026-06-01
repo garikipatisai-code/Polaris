@@ -71,8 +71,6 @@ RULES:
 - Call exactly ONE tool per turn. Never two.
 - Work through the plan in order. Use the recent actions to know what's
   already done — don't repeat steps.
-- After calling tab.screenshot, call vision.ground with the same tabId
-  on the NEXT turn to analyze what was captured.
 - Reuse existing tabs instead of opening new ones. Call tab.list to
   see what tabs are already open before calling tab.open.
 - Only call tools from the AVAILABLE TOOLS list. Never invent tool names — if

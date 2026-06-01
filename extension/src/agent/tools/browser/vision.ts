@@ -78,10 +78,9 @@ export function createVisionGroundTool(
   return {
     name: 'vision.ground',
     description:
-      'Verify page content using the vision model. PREREQUISITE: call tab.screenshot FIRST to ' +
-      'capture the page — it caches the image by tabId, then call this with the same tabId. ' +
-      'DO NOT pass dataUri (it is too long to repeat). ' +
-      'Example: tab.screenshot({tabId}) → vision.ground({tabId}). Images < 1200 px wide will be rejected.',
+      'Take a screenshot of a tab and verify its content using the vision model. ' +
+      'Give it a tabId (from tab.open / tab.list) and an optional question. ' +
+      'Example: vision.ground({tabId: 42}). Images < 1200 px wide will be rejected.',
     argsSchema: visionGroundArgs,
     outputSchema: visionGroundOutput,
     parametersJSON: {
@@ -97,7 +96,7 @@ export function createVisionGroundTool(
         },
         tabId: {
           type: 'integer',
-          description: 'Tab id from tab.screenshot. PREFERRED — the screenshot is cached internally, no need to repeat the data URI.',
+          description: 'Tab id — vision.ground auto-captures a screenshot. PREFERRED over dataUri.',
         },
         widthPx: {
           type: 'integer',
@@ -106,11 +105,33 @@ export function createVisionGroundTool(
       },
     },
     execute: async (args) => {
-      // Resolve data URI: either from direct arg or from tabId cache
-      const dataUri = args.dataUri ?? (args.tabId !== undefined ? screenshotCache.get(args.tabId) : undefined);
+      // Resolve data URI: from cache, direct arg, or auto-capture
+      let dataUri = args.dataUri ?? (args.tabId !== undefined ? screenshotCache.get(args.tabId) : undefined);
+
+      // Auto-capture screenshot if nothing cached and tabId is provided
+      if (!dataUri && args.tabId !== undefined) {
+        try {
+          const target: { tabId: number } = { tabId: args.tabId };
+          await chrome.debugger.attach(target, '1.3');
+          try {
+            const result = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
+              format: 'png', fromSurface: true,
+            }) as { data?: string } | undefined;
+            if (result?.data) dataUri = `data:image/png;base64,${result.data}`;
+          } finally {
+            try { await chrome.debugger.detach(target); } catch { /* best-effort */ }
+          }
+        } catch (e) {
+          throw new BrowserToolError(
+            `vision.ground: failed to capture screenshot for tab ${args.tabId}: ${(e as Error).message}`,
+            { fatal: false },
+          );
+        }
+      }
+
       if (!dataUri || !DATA_URI_PNG_RE.test(dataUri)) {
         throw new BrowserToolError(
-          `vision.ground: no valid screenshot available${args.tabId !== undefined ? ` for tab ${args.tabId} — call tab.screenshot first` : ''}`,
+          `vision.ground: no screenshot available${args.tabId !== undefined ? ` for tab ${args.tabId}` : ''} — provide a tabId`,
           { fatal: false },
         );
       }

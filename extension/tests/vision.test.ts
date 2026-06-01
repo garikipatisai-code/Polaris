@@ -161,12 +161,13 @@ describe('createVisionGroundTool', () => {
     expect(result.confirmed).toBe(true);
   });
 
-  it('throws when tabId has no cached screenshot', async () => {
+  it('tries to auto-capture when tabId has no cached screenshot', async () => {
     const client = mockClient(SAMPLE_ASSESSMENT);
     const tool = createVisionGroundTool(client, 'qwen3.5:4b');
 
+    // Without chrome.debugger (test environment), auto-capture fails gracefully.
     await expect(
       tool.execute({ tabId: 99 }, { taskId: 't1', stepId: 's1' }),
-    ).rejects.toThrow(/call tab.screenshot first/);
+    ).rejects.toThrow(/failed to capture screenshot/);
   });
 });
