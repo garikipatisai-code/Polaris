@@ -69,6 +69,8 @@ export interface ProviderConfig {
   numPredict?: number;
   /** Context window (num_ctx) for this role. Larger = more history, more KV cache. */
   numCtx?: number;
+  /** Additional Ollama options (e.g. num_gpu for CPU-only roles). */
+  options?: Record<string, unknown>;
 }
 
 export interface OrchestratorOptions {
@@ -143,13 +145,13 @@ export class Orchestrator {
       : role === 'evaluator' ? this.evaluatorProvider
       : this.compactorProvider;
     if (override) return override;
-    // Fall back to defaultProvider fields (includes numCtx, timeoutMs, numPredict).
     return {
       client: this.defaultClient,
       model: this.defaultModel,
       numCtx: this.defaultProvider?.numCtx,
       timeoutMs: this.defaultProvider?.timeoutMs,
       numPredict: this.defaultProvider?.numPredict,
+      options: this.defaultProvider?.options,
     };
   }
 
@@ -161,6 +163,7 @@ export class Orchestrator {
       numCtx: this.defaultProvider?.numCtx,
       timeoutMs: this.defaultProvider?.timeoutMs,
       numPredict: this.defaultProvider?.numPredict,
+      options: this.defaultProvider?.options,
     };
   }
 
@@ -425,6 +428,7 @@ export class Orchestrator {
       timeoutMs: plannerProv.timeoutMs,
       numPredict: plannerProv.numPredict,
       numCtx: plannerProv.numCtx,
+      options: plannerProv.options,
       signal: this.abort?.signal,
       isInitial,
       replanHint,
@@ -503,6 +507,7 @@ export class Orchestrator {
       timeoutMs: execProv.timeoutMs,
       numPredict: execProv.numPredict,
       numCtx: execProv.numCtx,
+      options: execProv.options,
       signal: this.abort?.signal,
       fallback: this.fallbackFor('executor'),
     });
@@ -736,6 +741,7 @@ export class Orchestrator {
       timeoutMs: evalProv.timeoutMs,
       numPredict: evalProv.numPredict,
       numCtx: evalProv.numCtx,
+      options: evalProv.options,
       signal: this.abort?.signal,
       thinkingMode: this.evaluatorThinking,
       triggeredByFinish,

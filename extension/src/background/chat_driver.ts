@@ -70,6 +70,8 @@ export interface DriveProvider {
   numPredict?: number;
   /** Context window size (num_ctx) passed to Ollama. Defaults to 2048 if unset. */
   numCtx?: number;
+  /** Additional Ollama options (e.g. num_gpu for CPU-only roles). */
+  options?: Record<string, unknown>;
 }
 
 export interface DriveOptions {
@@ -89,7 +91,7 @@ export interface DriveResult extends DriverResponse {
  * Build Ollama options bag from DriveProvider, including only non-null fields.
  */
 function buildOllamaOptions(p: DriveProvider): Record<string, unknown> | undefined {
-  const opts: Record<string, unknown> = {};
+  const opts: Record<string, unknown> = { ...p.options };
   if (p.numPredict !== undefined) opts.num_predict = p.numPredict;
   if (p.numCtx !== undefined) opts.num_ctx = p.numCtx;
   return Object.keys(opts).length > 0 ? opts : undefined;

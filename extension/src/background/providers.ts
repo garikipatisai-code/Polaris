@@ -33,10 +33,10 @@ const CLOUD_TIMEOUT_MS = 60_000;
 /** Context window per role — matches BUDGETS in budget.ts. Without this, Ollama
  *  defaults to 2048/4096 and silently truncates prompts. */
 const ROLE_CTX: Record<string, number> = {
-  planner: 64000,
-  executor: 16000,
-  evaluator: 32000,
-  compactor: 16000,
+  planner: 65536,
+  executor: 16384,
+  evaluator: 32768,
+  compactor: 16384,
 };
 
 type ReasoningRole = 'planner' | 'executor' | 'evaluator' | 'compactor';
@@ -44,7 +44,7 @@ type ReasoningRole = 'planner' | 'executor' | 'evaluator' | 'compactor';
 export function buildProviders(settings: Settings, defaultClient: OllamaClient): ResolvedProviders {
   // Default provider (4B, used when no per-role override is set). 16K context fits
   // in GPU with q8_0 KV cache.
-  const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model, numCtx: 16000 };
+  const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model, numCtx: 16384 };
 
   const resolve = (role: ReasoningRole): ProviderConfig | undefined => {
     // Compactor stays LOCAL always (spec non-goal: no compactor-on-cloud). The
@@ -61,6 +61,9 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
     }
     const localModel = settings.roleModels?.[role];
     if (localModel && localModel !== settings.model) {
+      // 35B runs CPU-only (num_gpu:0) to keep VRAM free for KV cache — 5 GPU layers
+      // saved = ~2.5 GB VRAM, enough for 64K context without OOM on the P2200.
+      const is35b = localModel.includes('35b');
       return {
         client: defaultClient,
         model: localModel,
@@ -71,6 +74,7 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
         numPredict:
           role === 'planner' || role === 'evaluator' || role === 'executor' ? THINKING_NUM_PREDICT : undefined,
         numCtx: ROLE_CTX[role],
+        options: is35b ? { num_gpu: 0 } : undefined,
       };
     }
     return undefined;

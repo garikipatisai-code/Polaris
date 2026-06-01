@@ -32,7 +32,7 @@ describe('state_store: lifecycle', () => {
     expect(state.goal.text).toBe('test goal');                  // trimmed
     expect(state.phase).toBe('PLANNING');
     expect(state.plan.rootSteps).toEqual([]);
-    expect(state.budgets.executor.max).toBe(16000);
+    expect(state.budgets.executor.max).toBe(16384);
     expect(state.breaker.totalReplans).toBe(0);
     expect(state.turnsOnCurrentStep).toBe(0);
   });

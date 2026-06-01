@@ -30,6 +30,7 @@ export interface PlannerInput {
   timeoutMs?: number;
   numPredict?: number;
   numCtx?: number;
+  options?: Record<string, unknown>;
   fallback?: DriveProvider;
 }
 
@@ -100,7 +101,7 @@ export async function runPlanner(input: PlannerInput): Promise<PlannerOutput> {
     ? 'Produce the initial JSON plan now.'
     : 'Produce the revised JSON plan now, taking the replan hint into account.';
 
-  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict, numCtx: input.numCtx };
+  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict, numCtx: input.numCtx, options: input.options };
 
   // First attempt — thinking per setting.
   let response = await driveChatOnce(provider, {
