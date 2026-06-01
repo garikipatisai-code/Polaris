@@ -27,6 +27,7 @@ export interface ExecutorInput {
   signal?: AbortSignal;
   timeoutMs?: number;
   numPredict?: number;
+  numCtx?: number;
   fallback?: DriveProvider;
 }
 
@@ -79,7 +80,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
   // tool-calling mode without leaking task-specific text.
   const userAnchor = 'Take the next action toward completing the goal. Call exactly one tool now.';
 
-  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict };
+  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict, numCtx: input.numCtx };
 
   // First attempt
   const first = await driveChatOnce(provider, {

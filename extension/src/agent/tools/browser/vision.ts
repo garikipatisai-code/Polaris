@@ -25,7 +25,7 @@ const MIN_VISION_WIDTH_PX = 1200;
 const VISION_TIMEOUT_MS = 120_000;
 
 /** Regex for validating PNG base64 data URIs. */
-const DATA_URI_PNG_RE = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
+const DATA_URI_PNG_RE = /^data:image\/png;base64,[A-Za-z0-9+/\n\r=]+$/;
 
 /**
  * Cross-tool screenshot cache. `tab.screenshot` writes the last data URI per
@@ -78,9 +78,10 @@ export function createVisionGroundTool(
   return {
     name: 'vision.ground',
     description:
-      'Verify page content using the vision model. IMPORTANT: after taking a screenshot with ' +
-      'tab.screenshot, call this with tabId (NOT the dataUri string — it is too long to repeat). ' +
-      'Example: vision.ground({tabId: 42}). Images < 1200 px wide will be rejected.',
+      'Verify page content using the vision model. PREREQUISITE: call tab.screenshot FIRST to ' +
+      'capture the page — it caches the image by tabId, then call this with the same tabId. ' +
+      'DO NOT pass dataUri (it is too long to repeat). ' +
+      'Example: tab.screenshot({tabId}) → vision.ground({tabId}). Images < 1200 px wide will be rejected.',
     argsSchema: visionGroundArgs,
     outputSchema: visionGroundOutput,
     parametersJSON: {
@@ -127,9 +128,11 @@ export function createVisionGroundTool(
         args.question ??
         'Describe the page contents in 1-2 sentences. What elements are visible?';
 
+      // Strip data URI prefix — Ollama's images field expects raw base64
+      const rawBase64 = dataUri!.replace(/^data:image\/\w+;base64,/, '');
       const result = await client.chatOnce({
         model,
-        messages: [{ role: 'user', content: question, images: [dataUri!] }],
+        messages: [{ role: 'user', content: question, images: [rawBase64] }],
         timeoutMs: VISION_TIMEOUT_MS,
         think: false,
       });

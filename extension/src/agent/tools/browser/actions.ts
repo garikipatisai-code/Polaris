@@ -62,8 +62,9 @@ export const tabClickTool: ToolHandler<
 > = {
   name: 'tab.click',
   description:
-    'Click on an element in a tab. Requires either a backendDOMNodeId (from aria.extract) ' +
-    'or a CSS selector. Gated by domain tier: the target domain must be at least "click-only".',
+    'Click on an element in a tab. PREFER using backendDOMNodeId from aria.extract (more reliable). ' +
+    'CSS selector fallback also works. Call aria.extract on the tab first to discover element IDs. ' +
+    'Gated by domain tier: the target domain must be at least "click-only".',
   argsSchema: tabClickArgs,
   outputSchema: tabClickOutput,
   parametersJSON: {
@@ -178,7 +179,7 @@ const tabTypeOutput = z.object({
 
 export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeof tabTypeOutput>> = {
   name: 'tab.type',
-  description: 'Type text into an input element identified by CSS selector. Clears existing content first. Gated by domain tier: must be "full-action".',
+  description: 'Type text into an input element. Use a CSS selector obtained from aria.extract (call aria.extract first to discover the page structure and selectors). Clears existing content first. Gated by domain tier: must be "full-action".',
   argsSchema: tabTypeArgs,
   outputSchema: tabTypeOutput,
   parametersJSON: {
@@ -214,9 +215,32 @@ export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeo
           nodeId: documentNodeId,
           selector: args.selector,
         });
-        const elNodeId = (queryResult as { nodeId: number }).nodeId;
+        let elNodeId = (queryResult as { nodeId: number }).nodeId;
         if (!elNodeId) {
-          throw new BrowserToolError(`tab.type: selector "${args.selector}" matched no elements`, { fatal: false });
+          // Fallback: try common search/input selectors when the model guesses wrong
+          const fallbackSelectors = [
+            'input[type="search"]',
+            'input[type="text"]',
+            '#twotabsearchtextbox',
+            '[role="combobox"]',
+            '[role="searchbox"]',
+            'input:not([type="hidden"])',
+          ];
+          for (const fb of fallbackSelectors) {
+            const fbResult = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
+              nodeId: documentNodeId,
+              selector: fb,
+            });
+            const fbNodeId = (fbResult as { nodeId: number }).nodeId;
+            if (fbNodeId) {
+              elNodeId = fbNodeId;
+              console.warn(`[polaris] tab.type: selector "${args.selector}" not found; fell back to "${fb}"`);
+              break;
+            }
+          }
+          if (!elNodeId) {
+            throw new BrowserToolError(`tab.type: selector "${args.selector}" matched no elements`, { fatal: false });
+          }
         }
 
         // Clear existing content via Runtime.evaluate (handles both empty

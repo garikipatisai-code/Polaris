@@ -12,10 +12,10 @@
 export type Role = 'executor' | 'planner' | 'evaluator' | 'compactor';
 
 export const BUDGETS: Record<Role, number> = {
-  executor:  6000,    // hot path; 30–100×/task; must stay GPU-resident
-  planner:   32000,   // rare; thinking ON; tolerates higher latency
-  evaluator: 8000,    // periodic; thinking ON
-  compactor: 8000,    // pure transform; thinking OFF
+  executor:  16000,   // hot path; 4B GPU with q8_0 KV cache; enough for tool calls + history
+  planner:   64000,   // rare; thinking ON; 35B needs room for long-horizon reasoning
+  evaluator: 32000,   // periodic; thinking ON; must see full task context to evaluate
+  compactor: 16000,   // pure transform; needs to see accumulated scratchpad
 };
 
 /** Compaction fires when scratchpad reaches this fraction of the Executor budget. */

@@ -67,6 +67,8 @@ export interface ProviderConfig {
   timeoutMs?: number;
   /** num_predict for 35B thinking roles. */
   numPredict?: number;
+  /** Context window (num_ctx) for this role. Larger = more history, more KV cache. */
+  numCtx?: number;
 }
 
 export interface OrchestratorOptions {
@@ -409,6 +411,7 @@ export class Orchestrator {
       model: plannerProv.model,
       timeoutMs: plannerProv.timeoutMs,
       numPredict: plannerProv.numPredict,
+      numCtx: plannerProv.numCtx,
       signal: this.abort?.signal,
       isInitial,
       replanHint,
@@ -486,6 +489,7 @@ export class Orchestrator {
       model: execProv.model,
       timeoutMs: execProv.timeoutMs,
       numPredict: execProv.numPredict,
+      numCtx: execProv.numCtx,
       signal: this.abort?.signal,
       fallback: this.fallbackFor('executor'),
     });
@@ -718,6 +722,7 @@ export class Orchestrator {
       model: evalProv.model,
       timeoutMs: evalProv.timeoutMs,
       numPredict: evalProv.numPredict,
+      numCtx: evalProv.numCtx,
       signal: this.abort?.signal,
       thinkingMode: this.evaluatorThinking,
       triggeredByFinish,

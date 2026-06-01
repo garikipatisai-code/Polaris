@@ -71,6 +71,8 @@ RULES:
 - Call exactly ONE tool per turn. Never two.
 - Work through the plan in order. Use the recent actions to know what's
   already done — don't repeat steps.
+- After calling tab.screenshot, call vision.ground with the same tabId
+  on the NEXT turn to analyze what was captured.
 - When you've completed the actions for the **current step**, call
   \`next_step\` to advance to the next pending step.
 - When all plan steps are done OR the goal is fully satisfied, call

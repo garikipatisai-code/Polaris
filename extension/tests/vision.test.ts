@@ -14,6 +14,10 @@ import { BrowserToolError } from '../src/agent/tools/browser/lifecycle';
 const SAMPLE_DATA_URI =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
+/** Raw base64 expected by Ollama's images field (prefix stripped by vision.ground). */
+const SAMPLE_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
 /** A non-PNG string that should fail the dataUri regex. */
 const INVALID_DATA_URI = 'not-a-png-at-all';
 
@@ -58,7 +62,7 @@ describe('createVisionGroundTool', () => {
     expect(client.chatOnce).toHaveBeenCalledTimes(1);
     const callArgs = (client.chatOnce as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(callArgs.model).toBe('qwen3.5:4b');
-    expect(callArgs.messages[0].images).toEqual([SAMPLE_DATA_URI]);
+    expect(callArgs.messages[0].images).toEqual([SAMPLE_BASE64]);
     expect(callArgs.messages[0].content).toContain('Describe the page contents');
 
     // Verify the output shape
@@ -153,7 +157,7 @@ describe('createVisionGroundTool', () => {
 
     expect(client.chatOnce).toHaveBeenCalledTimes(1);
     const callArgs = (client.chatOnce as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(callArgs.messages[0].images![0]).toBe(SAMPLE_DATA_URI);
+    expect(callArgs.messages[0].images![0]).toBe(SAMPLE_BASE64);
     expect(result.confirmed).toBe(true);
   });
 

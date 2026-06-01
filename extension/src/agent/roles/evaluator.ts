@@ -32,6 +32,7 @@ export interface EvaluatorInput {
   triggeredByFinish: boolean;
   timeoutMs?: number;
   numPredict?: number;
+  numCtx?: number;
   fallback?: DriveProvider;
 }
 
@@ -86,7 +87,7 @@ export async function runEvaluator(input: EvaluatorInput): Promise<EvaluatorOutp
     ? 'Evaluate whether the executor\'s proposed finish answer satisfies the goal. Return JSON only.'
     : 'Evaluate progress so far. Return your verdict as JSON only.';
 
-  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict };
+  const provider = { client, model, timeoutMs: input.timeoutMs, numPredict: input.numPredict, numCtx: input.numCtx };
 
   const firstResp = await driveChatOnce(provider, {
     messages: [

@@ -68,6 +68,8 @@ export interface DriveProvider {
   timeoutMs?: number;
   /** num_predict for local thinking roles on the 35B (else thinking eats the budget). */
   numPredict?: number;
+  /** Context window size (num_ctx) passed to Ollama. Defaults to 2048 if unset. */
+  numCtx?: number;
 }
 
 export interface DriveOptions {
@@ -81,6 +83,16 @@ export interface DriveOptions {
 export interface DriveResult extends DriverResponse {
   providerUsed: 'local' | 'cloud';
   fellBack: boolean;
+}
+
+/**
+ * Build Ollama options bag from DriveProvider, including only non-null fields.
+ */
+function buildOllamaOptions(p: DriveProvider): Record<string, unknown> | undefined {
+  const opts: Record<string, unknown> = {};
+  if (p.numPredict !== undefined) opts.num_predict = p.numPredict;
+  if (p.numCtx !== undefined) opts.num_ctx = p.numCtx;
+  return Object.keys(opts).length > 0 ? opts : undefined;
 }
 
 /**
@@ -106,7 +118,7 @@ export async function driveChatOnce(
       think: opts.think,
       signal: opts.signal,
       timeoutMs: primary.timeoutMs,
-      options: primary.numPredict ? { num_predict: primary.numPredict } : undefined,
+      options: buildOllamaOptions(primary),
     });
     return { ...resp, providerUsed: 'local', fellBack: false };
   }
@@ -166,7 +178,7 @@ export async function driveChatOnce(
       think: opts.think,
       signal: opts.signal,
       timeoutMs: fallback.timeoutMs,
-      options: fallback.numPredict ? { num_predict: fallback.numPredict } : undefined,
+      options: buildOllamaOptions(fallback),
     });
     return { ...resp, providerUsed: 'local', fellBack: true };
   }

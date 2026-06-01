@@ -383,7 +383,7 @@ function coerceAXTree(raw: unknown): AXTree {
 export const ariaExtractTool: ToolHandler<AriaExtractArgs, AriaExtractOutput> = {
   name: 'aria.extract',
   description:
-    'Extract a simplified ARIA accessibility tree from a tab. Returns a model-friendly hierarchy of (role, name, value, children) — use this instead of raw HTML for understanding page structure.',
+    'Extract a simplified ARIA accessibility tree from a tab. Returns a model-friendly hierarchy of (role, name, value, children, backendDOMNodeId). FIRST tool to call on any new page — use it to discover page structure, find input elements, buttons, and their selectors. The backendDOMNodeId can be used with tab.click.',
   argsSchema: AriaExtractArgsSchema,
   outputSchema: AriaExtractOutputSchema,
   parametersJSON: {
