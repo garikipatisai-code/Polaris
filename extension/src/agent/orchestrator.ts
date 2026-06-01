@@ -21,7 +21,7 @@
 import type { OllamaClient } from '../background/ollama';
 import type { AnyClient } from '../background/chat_driver';
 import { CloudClient as CloudClientCtor } from '../background/cloud_client';
-import { ToolRegistry, createDefaultRegistry, createVisionGroundTool } from './tools';
+import { ToolRegistry, createDefaultRegistry, createVisionGroundTool, createExtractTool } from './tools';
 import { closeOwnedTabs } from './tools';
 import { runExecutor } from './roles/executor';
 import { runPlanner } from './roles/planner';
@@ -130,6 +130,8 @@ export class Orchestrator {
     // (vision is an executor-side tool). Cast to OllamaClient since vision
     // expects an Ollama client; the default provider always is.
     this.registry.register(createVisionGroundTool(this.defaultClient as OllamaClient, this.defaultModel));
+    // page.extract — LLM-based extraction for any page type
+    this.registry.register(createExtractTool({ client: this.defaultClient as OllamaClient, model: this.defaultModel }));
     this.onEvent = opts.onEvent ?? (() => {});
     this.maxSteps = opts.maxSteps ?? 30;
     this.plannerThinking = opts.plannerThinking ?? true;
