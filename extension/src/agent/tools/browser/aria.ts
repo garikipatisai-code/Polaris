@@ -97,6 +97,22 @@ export function simplifyAxTree(tree: AXTree): SimplifiedNode | null {
   }
 
   result = collapseWrapperChain(result);
+
+  // Assign sequential indices to nodes that have a backendDOMNodeId and a
+  // meaningful role. These are the elements the agent can interact with via
+  // tab.click / tab.type / tab.select.
+  let nextIndex = 1;
+  function assignIndices(n: SimplifiedNode): void {
+    if (
+      n.backendDOMNodeId !== undefined &&
+      !['RootWebArea', 'generic', 'none', 'presentation', '', 'document'].includes(n.role)
+    ) {
+      n.i = nextIndex++;
+    }
+    if (n.children) n.children.forEach(assignIndices);
+  }
+  assignIndices(result);
+
   result = applyTokenCap(result);
   return result;
 }
@@ -164,6 +180,18 @@ function buildSimplified(
   // / ignored / partial-tree nodes).
   if (typeof node.backendDOMNodeId === 'number') {
     simplified.backendDOMNodeId = node.backendDOMNodeId;
+  }
+  // Populate bounding box from CDP bounds quad [x1,y1,x2,y2,x3,y3,x4,y4]
+  if (node.bounds?.value && node.bounds.value.length >= 4) {
+    const pts = node.bounds.value;
+    const xs = pts.map((p) => p.x);
+    const ys = pts.map((p) => p.y);
+    simplified.bbox = {
+      x: Math.min(...xs),
+      y: Math.min(...ys),
+      width: Math.max(...xs) - Math.min(...xs),
+      height: Math.max(...ys) - Math.min(...ys),
+    };
   }
   if (childResults.length > 0) simplified.children = childResults;
   return [simplified];
@@ -237,6 +265,8 @@ function cloneNode(node: SimplifiedNode): SimplifiedNode {
   if (node.name !== undefined) out.name = node.name;
   if (node.value !== undefined) out.value = node.value;
   if (node.backendDOMNodeId !== undefined) out.backendDOMNodeId = node.backendDOMNodeId;
+  if (node.i !== undefined) out.i = node.i;
+  if (node.bbox !== undefined) out.bbox = { ...node.bbox };
   if (node.children) out.children = node.children.map(cloneNode);
   return out;
 }
@@ -282,6 +312,15 @@ const SimplifiedNodeSchema: z.ZodType<SimplifiedNode> = z.lazy(() =>
     role: z.string(),
     name: z.string().optional(),
     value: z.string().optional(),
+    i: z.number().int().positive().optional(),
+    bbox: z
+      .object({
+        x: z.number(),
+        y: z.number(),
+        width: z.number(),
+        height: z.number(),
+      })
+      .optional(),
     backendDOMNodeId: z.number().int().nonnegative().optional(),
     children: z.array(SimplifiedNodeSchema).optional(),
   }),
@@ -332,7 +371,12 @@ async function runExtraction(tabId: number): Promise<AriaExtractOutput> {
       debuggerApi.sendCommand(target, 'Accessibility.getFullAXTree', undefined, cb),
     );
     const axTree = coerceAXTree(raw);
-    return { tree: simplifyAxTree(axTree) };
+    const simplified = simplifyAxTree(axTree);
+    if (simplified) {
+      const { cacheElements } = await import('./aria_types');
+      cacheElements(tabId, simplified);
+    }
+    return { tree: simplified };
   } catch (e) {
     if (e instanceof BrowserToolError) throw e;
     throw new BrowserToolError(
@@ -383,7 +427,8 @@ function coerceAXTree(raw: unknown): AXTree {
 export const ariaExtractTool: ToolHandler<AriaExtractArgs, AriaExtractOutput> = {
   name: 'aria.extract',
   description:
-    'Extract a simplified ARIA accessibility tree from a tab. Returns a model-friendly hierarchy of (role, name, value, children, backendDOMNodeId). FIRST tool to call on any new page — use it to discover page structure, find input elements, buttons, and their selectors. The backendDOMNodeId can be used with tab.click.',
+    'Extract a simplified ARIA accessibility tree from a tab. Each interactive element gets an index [1], [2], ... and a bounding box. ' +
+    'FIRST tool to call on any new page — use it to discover elements and their indices for click/type by index.',
   argsSchema: AriaExtractArgsSchema,
   outputSchema: AriaExtractOutputSchema,
   parametersJSON: {
