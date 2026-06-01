@@ -200,9 +200,11 @@ async function chromeTabsRemove(tabId: number): Promise<void> {
 const FORBIDDEN_SCHEMES = ['chrome-extension:', 'chrome:', 'file:'] as const;
 
 function validateNavUrl(raw: string): URL {
+  // Auto-prepend https:// when no scheme is present (models often drop it on replan).
+  const normalized = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw) ? raw : `https://${raw}`;
   let parsed: URL;
   try {
-    parsed = new URL(raw);
+    parsed = new URL(normalized);
   } catch {
     throw new BrowserToolError(`tab.open: invalid URL: ${truncate(raw, 100)}`, {
       fatal: false,
