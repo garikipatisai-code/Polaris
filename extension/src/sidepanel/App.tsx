@@ -649,7 +649,7 @@ export default function App() {
             <div className="drawer-section-head">
               <span className="drawer-section-label">Model source per role</span>
               <span className="drawer-section-hint">
-                Default is fully local. <code>Local 26B</code> uses {LOCAL_26B} for higher-quality
+                Default is fully local (e4b). <code>26B</code> uses {LOCAL_26B} for higher-quality
                 reasoning (slower). <code>Cloud</code> sends PII-anonymized prompts to your own key.
               </span>
             </div>
@@ -660,8 +660,8 @@ export default function App() {
                   value={roleSource(role)}
                   onChange={(e) => setRoleSource(role, e.target.value as ModelSource)}
                 >
-                  <option value="default">Default (e2b)</option>
-                  <option value="local26b">Local 26B</option>
+                  <option value="default">Default (e4b)</option>
+                  <option value="local26b">26B (slower, 256K ctx)</option>
                   <option value="cloud">Cloud (BYOK)</option>
                 </select>
                 {roleSource(role) === 'cloud' && (

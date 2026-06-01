@@ -7,18 +7,18 @@ import { CloudClient } from '../src/background/cloud_client';
 const local = new OllamaClient('http://localhost:11434');
 
 describe('buildProviders', () => {
-  it('locked defaults route reasoning roles to the 26B local override', () => {
+  it('defaults to e4b for all roles with no per-role overrides', () => {
     const p = buildProviders(DEFAULT_SETTINGS, local);
-    expect(p.defaultProvider.model).toBe('gemma4:e2b');
-    expect(p.plannerProvider?.model).toBe('gemma4:26b');
-    expect(p.evaluatorProvider?.model).toBe('gemma4:26b');
+    expect(p.defaultProvider.model).toBe('gemma4:e4b');
+    expect(p.plannerProvider).toBeUndefined();
+    expect(p.evaluatorProvider).toBeUndefined();
     expect(p.executorProvider).toBeUndefined();
     expect(p.compactorProvider).toBeUndefined();
-    expect(p.plannerProvider?.client).toBe(local);
   });
 
-  it('26B reasoning roles get a raised timeout + num_predict', () => {
-    const p = buildProviders(DEFAULT_SETTINGS, local);
+  it('explicit 26B override gets a raised timeout + num_predict', () => {
+    const settings = { ...DEFAULT_SETTINGS, roleModels: { planner: 'gemma4:26b', evaluator: 'gemma4:26b' } };
+    const p = buildProviders(settings, local);
     expect(p.plannerProvider?.timeoutMs).toBeGreaterThanOrEqual(25 * 60 * 1000);
     expect(p.evaluatorProvider?.timeoutMs).toBeGreaterThanOrEqual(12 * 60 * 1000);
     expect(p.plannerProvider?.numPredict).toBeGreaterThanOrEqual(2048);
@@ -37,7 +37,7 @@ describe('buildProviders', () => {
   });
 
   it('an override equal to the default model is treated as no override', () => {
-    const settings = { ...DEFAULT_SETTINGS, roleModels: { executor: 'gemma4:e2b' } };
+    const settings = { ...DEFAULT_SETTINGS, roleModels: { executor: 'gemma4:e4b' } };
     const p = buildProviders(settings, local);
     expect(p.executorProvider).toBeUndefined();
   });

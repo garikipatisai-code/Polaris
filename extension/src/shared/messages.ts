@@ -44,18 +44,16 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   ollamaBaseUrl: 'http://localhost:11434',
-  model: 'gemma4:e2b',
+  model: 'gemma4:e4b',
   embeddingModel: 'mxbai-embed-large',
   enableThinking: false,
   plannerThinking: true,
   evaluatorThinking: true,
-  executorThinking: false,
-  // Locked 2026-06-01: reasoning roles -> Gemma 4 26B (256K context, MoE);
-  // Executor/Compactor inherit the fast e2b (`model`). Cloud stays opt-in/off.
-  roleModels: {
-    planner: 'gemma4:26b',
-    evaluator: 'gemma4:26b',
-  },
+  executorThinking: true,
+  // All roles -> Gemma 4 e4b (4.5B active, 128K context, vision built-in).
+  // The e4b fits ~14 GPU layers on the P2200 with the rest on CPU, giving
+  // ~3-5 tok/s with reliable native function calling.
+  roleModels: {},
 };
 
 export interface ChatStats {
