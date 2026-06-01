@@ -242,14 +242,10 @@ describe('tab.open', () => {
     expect(createArgs.active).toBe(false);
   });
 
-  it('rejects an invalid URL with a NON-fatal BrowserToolError', async () => {
-    await expect(
-      tabOpenTool.execute({ url: 'not a url' }, { taskId: 'taskA', stepId: null }),
-    ).rejects.toMatchObject({
-      name: 'BrowserToolError',
-      fatal: false,
-      message: expect.stringContaining('invalid URL'),
-    });
+  it('returns structured error for an invalid URL (was BrowserToolError)', async () => {
+    const out = await tabOpenTool.execute({ url: 'not a url' }, { taskId: 'taskA', stepId: null });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('invalid URL');
   });
 
   it('rejects chrome-extension:// URLs with a FATAL BrowserToolError', async () => {
@@ -307,30 +303,26 @@ describe('tab.close', () => {
     expect(mock.tabs.remove).toHaveBeenCalledWith(opened.tabId);
   });
 
-  it('refuses to close a tab the current task does not own (non-fatal)', async () => {
+  it('refuses to close a tab the current task does not own (structured error)', async () => {
     const opened = await tabOpenTool.execute(
       { url: 'https://example.com/' },
       { taskId: 'taskA', stepId: null },
     );
-    await expect(
-      tabCloseTool.execute(
-        { tabId: opened.tabId },
-        { taskId: 'taskB', stepId: null }, // wrong task
-      ),
-    ).rejects.toMatchObject({
-      name: 'BrowserToolError',
-      fatal: false,
-      message: expect.stringContaining('not owned'),
-    });
+    const result = await tabCloseTool.execute(
+      { tabId: opened.tabId },
+      { taskId: 'taskB', stepId: null }, // wrong task
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('not owned');
     // The tab must NOT have been touched on the chrome side.
     expect(mock.tabs.remove).not.toHaveBeenCalled();
     expect(getOwnedTabs('taskA')).toContain(opened.tabId);
   });
 
   it('also refuses to close arbitrary tabIds the agent never opened', async () => {
-    await expect(
-      tabCloseTool.execute({ tabId: 999_999 }, { taskId: 'taskA', stepId: null }),
-    ).rejects.toMatchObject({ name: 'BrowserToolError', fatal: false });
+    const result = await tabCloseTool.execute({ tabId: 999_999 }, { taskId: 'taskA', stepId: null });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('not owned');
   });
 });
 
@@ -430,18 +422,14 @@ describe('tab.screenshot', () => {
     expect(calls).toMatch(/width.*800/);
   });
 
-  it('rejects tiny CDP screenshots (base64 < 1000 chars after prefix) as non-fatal', async () => {
+  it('returns structured error for tiny CDP screenshots (base64 < 1000 chars after prefix)', async () => {
     mock._state.captureDataUri = makeFakePngDataUri(1, 1, 0); // smallest PNG: ~67 bytes base64
     const ctxA = { taskId: 'taskA', stepId: null };
     const opened = await tabOpenTool.execute({ url: 'https://example.com/' }, ctxA);
 
-    await expect(
-      tabScreenshotTool.execute({ tabId: opened.tabId }, ctxA),
-    ).rejects.toMatchObject({
-      name: 'BrowserToolError',
-      fatal: false,
-      message: expect.stringContaining('too small'),
-    });
+    const out = await tabScreenshotTool.execute({ tabId: opened.tabId }, ctxA);
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('too small');
   });
 
   it('parsePngDimensions returns null on non-PNG data URIs', () => {

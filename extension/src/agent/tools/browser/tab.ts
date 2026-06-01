@@ -26,6 +26,7 @@ import type { ToolHandler } from '../registry';
 import { BrowserToolError, withBrowserTimeout } from './lifecycle';
 import * as store from '../../state_store';
 import { cacheScreenshot } from './vision';
+import { clearElementCache } from './aria_types';
 
 // ──────────────────────────────────────────────────────────────────────
 // Ownership tracking — both in-memory (fast lookup) and persisted to hot
@@ -329,6 +330,8 @@ const tabOpenArgs = z.object({
 });
 
 const tabOpenOutput = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
   tabId: z.number().int(),
   url: z.string(),
 });
@@ -359,7 +362,15 @@ export const tabOpenTool: ToolHandler<
     required: ['url'],
   },
   execute: async (args, ctx) => {
-    const parsed = validateNavUrl(args.url);
+    let parsed: URL;
+    try {
+      parsed = validateNavUrl(args.url);
+    } catch (e) {
+      if (e instanceof BrowserToolError && !e.fatal) {
+        return { ok: false, error: e.message };
+      }
+      throw e;
+    }
     const waitForLoad = args.waitForLoad !== false; // default true
 
     return withBrowserTimeout(
@@ -369,14 +380,12 @@ export const tabOpenTool: ToolHandler<
         const tab = await chromeTabsCreate({ url: parsed.toString(), active: false });
         const tabId = tab.id;
         if (typeof tabId !== 'number') {
-          throw new BrowserToolError('tab.open: chrome.tabs.create returned no tab id', {
-            fatal: false,
-          });
+          return { ok: false, error: 'tab.open: chrome.tabs.create returned no tab id' };
         }
         await addOwned(ctx.taskId, tabId);
 
         if (!waitForLoad) {
-          return { tabId, url: tab.url ?? parsed.toString() };
+          return { ok: true as const, tabId, url: tab.url ?? parsed.toString() };
         }
 
         // Poll for completion. 30s budget; the outer withBrowserTimeout
@@ -387,11 +396,11 @@ export const tabOpenTool: ToolHandler<
         while (Date.now() < deadline) {
           last = await chromeTabsGet(tabId);
           if (last.status === 'complete') {
-            return { tabId, url: last.url ?? parsed.toString() };
+            return { ok: true as const, tabId, url: last.url ?? parsed.toString() };
           }
           await sleep(100);
         }
-        throw new BrowserToolError('tab.open: load timeout after 30s', { fatal: false });
+        return { ok: false, error: 'tab.open: load timeout after 30s' };
       },
       35_000,
       'tab.open',
@@ -404,7 +413,10 @@ export const tabOpenTool: ToolHandler<
 // ──────────────────────────────────────────────────────────────────────
 
 const tabCloseArgs = z.object({ tabId: z.number().int() });
-const tabCloseOutput = z.object({ ok: z.literal(true) });
+const tabCloseOutput = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
+});
 
 export const tabCloseTool: ToolHandler<
   z.infer<typeof tabCloseArgs>,
@@ -412,7 +424,7 @@ export const tabCloseTool: ToolHandler<
 > = {
   name: 'tab.close',
   description:
-    'Close a tab previously opened by this task with `tab.open`. Refuses to close tabs the current task does not own.',
+    'Close a tab owned by the current task. Returns {ok: false, error} on failure instead of throwing.',
   argsSchema: tabCloseArgs,
   outputSchema: tabCloseOutput,
   parametersJSON: {
@@ -425,7 +437,7 @@ export const tabCloseTool: ToolHandler<
   execute: async (args, ctx) => {
     await hydrateOwnership(ctx.taskId);
     if (!isOwned(ctx.taskId, args.tabId)) {
-      throw new BrowserToolError('tab.close: not owned by current task', { fatal: false });
+      return { ok: false, error: 'tab.close: not owned by current task' };
     }
     try {
       await chromeTabsRemove(args.tabId);
@@ -434,10 +446,11 @@ export const tabCloseTool: ToolHandler<
       // Tolerate already-closed: chrome reports this as "No tab with id N".
       if (!/No tab with id/i.test(msg)) {
         // Other failures we surface to the model as non-fatal.
-        throw new BrowserToolError(`tab.close: ${truncate(msg, 100)}`, { fatal: false });
+        return { ok: false, error: `tab.close: ${truncate(msg, 100)}` };
       }
     }
     await removeOwned(ctx.taskId, args.tabId);
+    clearElementCache(args.tabId);
     return { ok: true as const };
   },
 };
@@ -451,6 +464,8 @@ export const tabCloseTool: ToolHandler<
 // single stray field doesn't tank an otherwise-valid list.
 const tabListArgs = z.object({});
 const tabListOutput = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
   tabs: z.array(
     z.object({ tabId: z.number().int(), url: z.string(), title: z.string() }),
   ),
@@ -487,7 +502,7 @@ export const tabListTool: ToolHandler<
         await removeOwned(ctx.taskId, id);
       }
     }
-    return { tabs: out };
+    return { ok: true as const, tabs: out };
   },
 };
 
@@ -497,6 +512,8 @@ export const tabListTool: ToolHandler<
 
 const tabScreenshotArgs = z.object({ tabId: z.number().int() });
 const tabScreenshotOutput = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
   dataUri: z.string(),
   widthPx: z.number().int(),
   heightPx: z.number().int(),
@@ -532,10 +549,10 @@ export const tabScreenshotTool: ToolHandler<
         try {
           await chrome.debugger.attach(target, '1.3');
         } catch (e) {
-          throw new BrowserToolError(
-            `tab.screenshot: could not attach debugger to tab ${args.tabId}: ${(e as Error).message}`,
-            { fatal: false },
-          );
+          return {
+            ok: false as const,
+            error: `tab.screenshot: could not attach debugger to tab ${args.tabId}: ${(e as Error).message}`,
+          };
         }
 
         let dataUri: string;
@@ -546,7 +563,10 @@ export const tabScreenshotTool: ToolHandler<
           }) as { data?: string } | undefined;
           const b64 = result?.data;
           if (!b64) {
-            throw new BrowserToolError('tab.screenshot: Page.captureScreenshot returned no data', { fatal: false });
+            return {
+              ok: false as const,
+              error: 'tab.screenshot: Page.captureScreenshot returned no data',
+            };
           }
           dataUri = `data:image/png;base64,${b64}`;
         } finally {
@@ -554,10 +574,10 @@ export const tabScreenshotTool: ToolHandler<
         }
 
         if (dataUri.length < 1000) {
-          throw new BrowserToolError(
-            'tab.screenshot: too small — image may have failed',
-            { fatal: false },
-          );
+          return {
+            ok: false as const,
+            error: 'tab.screenshot: too small — image may have failed',
+          };
         }
 
         // Cache for vision.ground lookups by tabId
@@ -573,7 +593,7 @@ export const tabScreenshotTool: ToolHandler<
           );
         }
 
-        return { dataUri, widthPx, heightPx };
+        return { ok: true as const, dataUri, widthPx, heightPx };
       },
       10_000,
       'tab.screenshot',
@@ -591,6 +611,8 @@ const tabWaitArgs = z.object({
 });
 
 const tabWaitOutput = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
   status: z.union([z.literal('complete'), z.literal('loading')]),
 });
 
@@ -625,28 +647,22 @@ export const tabWaitLoadedTool: ToolHandler<
     try {
       last = await chromeTabsGet(args.tabId);
     } catch (e) {
-      throw new BrowserToolError(
-        `tab.wait_loaded: ${truncate((e as Error).message, 100)}`,
-        { fatal: false },
-      );
+      return { ok: false as const, error: `tab.wait_loaded: ${truncate((e as Error).message, 100)}` };
     }
-    if (last.status === 'complete') return { status: 'complete' as const };
+    if (last.status === 'complete') return { ok: true as const, status: 'complete' as const };
 
     while (Date.now() < deadline) {
       await sleep(200);
       try {
         last = await chromeTabsGet(args.tabId);
       } catch (e) {
-        throw new BrowserToolError(
-          `tab.wait_loaded: ${truncate((e as Error).message, 100)}`,
-          { fatal: false },
-        );
+        return { ok: false as const, error: `tab.wait_loaded: ${truncate((e as Error).message, 100)}` };
       }
-      if (last.status === 'complete') return { status: 'complete' as const };
+      if (last.status === 'complete') return { ok: true as const, status: 'complete' as const };
     }
     // Timed out — return the final observed status (typically 'loading')
     // rather than throwing. The model can decide whether to retry or move on.
-    return { status: 'loading' as const };
+    return { ok: true as const, status: 'loading' as const };
   },
 };
 
