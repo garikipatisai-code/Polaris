@@ -390,7 +390,7 @@ export default function App() {
   }
 
   type ModelSource = 'default' | 'local35b' | 'cloud';
-  const LOCAL_35B = 'qwen3.6:35b-a3b';
+  const LOCAL_35B = 'gemma4:26b';
 
   function roleSource(role: 'planner' | 'executor' | 'evaluator'): ModelSource {
     if (settings.cloud?.[role]?.apiKey) return 'cloud';
@@ -641,7 +641,7 @@ export default function App() {
             <div className="drawer-section-head">
               <span className="drawer-section-label">Model source per role</span>
               <span className="drawer-section-hint">
-                Default is fully local. <code>Local 35B</code> uses {LOCAL_35B} for higher-quality
+                Default is fully local. <code>Local 26B</code> uses {LOCAL_35B} for higher-quality
                 reasoning (slower). <code>Cloud</code> sends PII-anonymized prompts to your own key.
               </span>
             </div>
@@ -653,7 +653,7 @@ export default function App() {
                   onChange={(e) => setRoleSource(role, e.target.value as ModelSource)}
                 >
                   <option value="default">Default (4B)</option>
-                  <option value="local35b">Local 35B</option>
+                  <option value="local35b">Local 26B</option>
                   <option value="cloud">Cloud (BYOK)</option>
                 </select>
                 {roleSource(role) === 'cloud' && (

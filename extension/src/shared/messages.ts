@@ -42,16 +42,16 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   ollamaBaseUrl: 'http://localhost:11434',
-  model: 'qwen3.5:4b',
+  model: 'gemma4:e2b',
   embeddingModel: 'mxbai-embed-large',
   enableThinking: false,
   plannerThinking: true,
   evaluatorThinking: true,
-  // Locked 2026-05-31 (spec §10): reasoning roles -> capable local 35B;
-  // Executor/Compactor inherit the fast 4B (`model`). Cloud stays opt-in/off.
+  // Locked 2026-06-01: reasoning roles -> Gemma 4 26B (256K context, MoE);
+  // Executor/Compactor inherit the fast e2b (`model`). Cloud stays opt-in/off.
   roleModels: {
-    planner: 'qwen3.6:35b-a3b',
-    evaluator: 'qwen3.6:35b-a3b',
+    planner: 'gemma4:26b',
+    evaluator: 'gemma4:26b',
   },
 };
 

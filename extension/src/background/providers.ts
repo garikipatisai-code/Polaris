@@ -22,9 +22,9 @@ export interface ResolvedProviders {
   compactorProvider?: ProviderConfig;
 }
 
-/** Big timeouts for the CPU-bound 35B (from the Linux verification). */
-const PLANNER_35B_TIMEOUT_MS = 25 * 60 * 1000;
-const EVALUATOR_35B_TIMEOUT_MS = 12 * 60 * 1000;
+/** Big timeouts for the CPU-bound 26B (from the Gemma 4 research). */
+const PLANNER_26B_TIMEOUT_MS = 25 * 60 * 1000;
+const EVALUATOR_26B_TIMEOUT_MS = 12 * 60 * 1000;
 /** Generation budget so think:true doesn't swallow the whole output. */
 const THINKING_NUM_PREDICT = 2048;
 /** Cloud calls are fast; matches CloudClient's default. */
@@ -35,14 +35,14 @@ const CLOUD_TIMEOUT_MS = 60_000;
 const ROLE_CTX: Record<string, number> = {
   planner: 65536,
   executor: 16384,
-  evaluator: 32768,
+  evaluator: 65536,
   compactor: 16384,
 };
 
 type ReasoningRole = 'planner' | 'executor' | 'evaluator' | 'compactor';
 
 export function buildProviders(settings: Settings, defaultClient: OllamaClient): ResolvedProviders {
-  // Default provider (4B, used when no per-role override is set). 16K context fits
+  // Default provider (e2b, used when no per-role override is set). 16K context fits
   // in GPU with q8_0 KV cache.
   const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model, numCtx: 16384 };
 
@@ -61,20 +61,19 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
     }
     const localModel = settings.roleModels?.[role];
     if (localModel && localModel !== settings.model) {
-      // 35B runs CPU-only (num_gpu:0) to keep VRAM free for KV cache — 5 GPU layers
-      // saved = ~2.5 GB VRAM, enough for 64K context without OOM on the P2200.
-      const is35b = localModel.includes('35b');
+      // Large model (26B+) runs CPU-only to keep VRAM free for e2b's KV cache.
+      const isLarge = localModel.includes('26b') || localModel.includes('35b');
       return {
         client: defaultClient,
         model: localModel,
         timeoutMs:
-          role === 'planner' ? PLANNER_35B_TIMEOUT_MS
-          : role === 'evaluator' ? EVALUATOR_35B_TIMEOUT_MS
+          role === 'planner' ? PLANNER_26B_TIMEOUT_MS
+          : role === 'evaluator' ? EVALUATOR_26B_TIMEOUT_MS
           : undefined,
         numPredict:
           role === 'planner' || role === 'evaluator' || role === 'executor' ? THINKING_NUM_PREDICT : undefined,
         numCtx: ROLE_CTX[role],
-        options: is35b ? { num_gpu: 0 } : undefined,
+        options: isLarge ? { num_gpu: 0 } : undefined,
       };
     }
     return undefined;
