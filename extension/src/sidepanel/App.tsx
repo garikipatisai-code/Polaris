@@ -565,6 +565,14 @@ export default function App() {
             />
             <span>Thinking mode for Evaluator (M2.5+)</span>
           </label>
+          <label className="field checkbox">
+            <input
+              type="checkbox"
+              checked={settings.executorThinking}
+              onChange={(e) => updateSetting('executorThinking', e.target.checked)}
+            />
+            <span>Thinking mode for Executor (slower but may improve tool selection)</span>
+          </label>
           <div className="drawer-actions">
             <button onClick={testConnection}>Test connection</button>
             {connStatus !== 'unknown' && (

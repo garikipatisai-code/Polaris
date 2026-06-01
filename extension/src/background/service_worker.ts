@@ -338,6 +338,7 @@ async function handleAgentStart(port: chrome.runtime.Port, goal: string): Promis
     compactorProvider: providers.compactorProvider,
     plannerThinking: settings.plannerThinking,
     evaluatorThinking: settings.evaluatorThinking,
+    executorThinking: settings.executorThinking ?? false,
     onEvent: (event) => {
       send(port, { type: 'agent.event', event });
       if (event.type === 'verdict') {
@@ -452,6 +453,7 @@ async function handleAgentResume(port: chrome.runtime.Port): Promise<void> {
     compactorProvider: providers.compactorProvider,
     plannerThinking: settings.plannerThinking,
     evaluatorThinking: settings.evaluatorThinking,
+    executorThinking: settings.executorThinking ?? false,
     onEvent: (event) => {
       send(port, { type: 'agent.event', event });
       if (event.type === 'verdict') {

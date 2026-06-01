@@ -93,6 +93,8 @@ export interface OrchestratorOptions {
   plannerThinking?: boolean;
   /** Use thinking mode for the Evaluator role. Default true. */
   evaluatorThinking?: boolean;
+  /** Use thinking mode for the Executor role. Default false (e2b is fast enough). */
+  executorThinking?: boolean;
 }
 
 export class Orchestrator {
@@ -108,6 +110,7 @@ export class Orchestrator {
   private readonly maxSteps: number;
   private readonly plannerThinking: boolean;
   private readonly evaluatorThinking: boolean;
+  private readonly executorThinking: boolean;
   private abort: AbortController | null = null;
   private stepsSinceEval = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -131,6 +134,7 @@ export class Orchestrator {
     this.maxSteps = opts.maxSteps ?? 30;
     this.plannerThinking = opts.plannerThinking ?? true;
     this.evaluatorThinking = opts.evaluatorThinking ?? true;
+    this.executorThinking = opts.executorThinking ?? false;
   }
 
   /**
@@ -514,6 +518,7 @@ export class Orchestrator {
       numCtx: execProv.numCtx,
       options: execProv.options,
       signal: this.abort?.signal,
+      thinkingMode: this.executorThinking,
       fallback: this.fallbackFor('executor'),
     });
     const latencyMs = Math.round(performance.now() - t0);

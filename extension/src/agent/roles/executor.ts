@@ -29,6 +29,8 @@ export interface ExecutorInput {
   numPredict?: number;
   numCtx?: number;
   options?: Record<string, unknown>;
+  /** Enable thinking mode (slower but may improve tool selection). */
+  thinkingMode?: boolean;
   fallback?: DriveProvider;
 }
 
@@ -90,7 +92,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
       { role: 'user', content: userAnchor },
     ],
     tools: toolDefs,
-    think: false,
+    think: input.thinkingMode ?? false,
     signal,
   }, input.fallback);
   let toolCalls = first.message?.tool_calls ?? [];
@@ -127,7 +129,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
     const second = await driveChatOnce(provider, {
       messages: retryMessages,
       tools: toolDefs,
-      think: false,
+      think: input.thinkingMode ?? false,
       signal,
     }, input.fallback);
     toolCalls = second.message?.tool_calls ?? [];

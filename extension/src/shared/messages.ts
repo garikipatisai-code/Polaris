@@ -20,6 +20,8 @@ export interface Settings {
   plannerThinking: boolean;
   /** Thinking mode for the Evaluator role (M2.5+). Default on; disable on slow hardware. */
   evaluatorThinking: boolean;
+  /** Thinking mode for the Executor role. Off by default (e2b is fast enough without it). */
+  executorThinking: boolean;
   /** Per-role cloud provider overrides. When set, routes that role to a cloud LLM. */
   cloud?: {
     planner?: CloudProviderConfig;
@@ -47,6 +49,7 @@ export const DEFAULT_SETTINGS: Settings = {
   enableThinking: false,
   plannerThinking: true,
   evaluatorThinking: true,
+  executorThinking: false,
   // Locked 2026-06-01: reasoning roles -> Gemma 4 26B (256K context, MoE);
   // Executor/Compactor inherit the fast e2b (`model`). Cloud stays opt-in/off.
   roleModels: {
