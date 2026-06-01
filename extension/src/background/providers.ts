@@ -43,8 +43,8 @@ const ROLE_CTX: Record<string, number> = {
 type ReasoningRole = 'planner' | 'executor' | 'evaluator' | 'compactor';
 
 export function buildProviders(settings: Settings, defaultClient: OllamaClient): ResolvedProviders {
-  // Default provider (e2b, used when no per-role override is set). 128K context
-  // fits in GPU with q8_0 KV cache (~960 MB).
+  // Default provider (e4b/e2b, used when no per-role override). 128K context
+  // fits in GPU with q8_0 KV cache. Ollama dynamically splits layers.
   const defaultProvider: ProviderConfig = { client: defaultClient, model: settings.model, numCtx: 131072 };
 
   const resolve = (role: ReasoningRole): ProviderConfig | undefined => {
@@ -62,8 +62,6 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
     }
     const localModel = settings.roleModels?.[role];
     if (localModel && localModel !== settings.model) {
-      // Large model (26B+) runs CPU-only to keep VRAM free for e2b's KV cache.
-      const isLarge = localModel.includes('26b') || localModel.includes('35b');
       return {
         client: defaultClient,
         model: localModel,
@@ -74,7 +72,8 @@ export function buildProviders(settings: Settings, defaultClient: OllamaClient):
         numPredict:
           role === 'planner' || role === 'evaluator' ? THINKING_NUM_PREDICT : undefined,
         numCtx: ROLE_CTX[role],
-        options: isLarge ? { num_gpu: 0 } : undefined,
+        // No num_gpu override — Ollama dynamically splits layers across
+        // VRAM/CPU based on available resources and model size.
       };
     }
     return undefined;
