@@ -82,7 +82,13 @@ Add these lines in the override editor:
 ```ini
 [Service]
 Environment="OLLAMA_ORIGINS=chrome-extension://*"
+Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
+Environment="OLLAMA_KEEP_ALIVE=-1"
 ```
+
+- `OLLAMA_ORIGINS` — allows the Chrome extension to reach Ollama (otherwise HTTP 403).
+- `OLLAMA_KV_CACHE_TYPE=q8_0` — halves KV cache memory, enabling 16K+ context windows on 5 GB VRAM.
+- `OLLAMA_KEEP_ALIVE=-1` — keeps models loaded in memory between requests (avoids 5-15s reload delays).
 
 Save, then:
 
