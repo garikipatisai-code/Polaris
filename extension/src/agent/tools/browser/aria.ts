@@ -70,7 +70,7 @@ const TRUNCATION_MARKER: SimplifiedNode = {
  *
  * Returns null when the input has no nodes or no discoverable root.
  */
-export function simplifyAxTree(tree: AXTree): SimplifiedNode | null {
+export function simplifyAxTree(tree: AXTree, viewport?: { width: number; height: number }): SimplifiedNode | null {
   if (!tree.nodes || tree.nodes.length === 0) return null;
 
   const byId = new Map<string, AXNode>();
@@ -112,6 +112,34 @@ export function simplifyAxTree(tree: AXTree): SimplifiedNode | null {
     if (n.children) n.children.forEach(assignIndices);
   }
   assignIndices(result);
+
+  // Viewport-aware visibility filtering: count interactive elements that are
+  // visible, above the fold, or below the fold, and prepend a summary note.
+  // Above-fold elements have bottom-edge above 0 (scrolled past); below-fold
+  // elements have top-edge below viewport height.
+  if (viewport && viewport.width > 0 && viewport.height > 0) {
+    let visible = 0, belowFold = 0, aboveFold = 0, totalInteractive = 0;
+    function countVisible(n: SimplifiedNode): void {
+      if (n.i !== undefined) {
+        totalInteractive++;
+        if (n.bbox) {
+          const above = n.bbox.y + n.bbox.height < 0;
+          const below = n.bbox.y > viewport!.height;
+          if (above) aboveFold++;
+          else if (below) belowFold++;
+          else visible++;
+        }
+      }
+      if (n.children) n.children.forEach(countVisible);
+    }
+    countVisible(result);
+    // Add viewport summary as first child note
+    if (!result.children) result.children = [];
+    result.children.unshift({
+      role: 'note',
+      name: `viewport: ${visible} visible, ${belowFold} below fold, ${aboveFold} above, ${totalInteractive} interactive elements total`,
+    });
+  }
 
   result = applyTokenCap(result);
   return result;
@@ -367,11 +395,23 @@ async function runExtraction(tabId: number): Promise<AriaExtractOutput> {
     await callDebugger<unknown>((cb) =>
       debuggerApi.sendCommand(target, 'Accessibility.enable', undefined, cb),
     );
+    // Get viewport dimensions for visibility filtering
+    let viewportWidth = 0, viewportHeight = 0;
+    try {
+      const metrics = await callDebugger<{ contentSize?: { width: number; height: number } }>((cb) =>
+        debuggerApi.sendCommand(target, 'Page.getLayoutMetrics', undefined, cb),
+      );
+      if (metrics?.contentSize) {
+        viewportWidth = Math.round(metrics.contentSize.width);
+        viewportHeight = Math.round(metrics.contentSize.height);
+      }
+    } catch { /* best-effort */ }
+
     const raw = await callDebugger<unknown>((cb) =>
       debuggerApi.sendCommand(target, 'Accessibility.getFullAXTree', undefined, cb),
     );
     const axTree = coerceAXTree(raw);
-    const simplified = simplifyAxTree(axTree);
+    const simplified = simplifyAxTree(axTree, viewportWidth > 0 ? { width: viewportWidth, height: viewportHeight } : undefined);
     if (simplified) {
       const { cacheElements } = await import('./aria_types');
       cacheElements(tabId, simplified);
