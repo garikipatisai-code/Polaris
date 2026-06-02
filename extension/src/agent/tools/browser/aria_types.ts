@@ -81,16 +81,16 @@ export const ARIA_OUTPUT_CHAR_CAP = 8000;
  * Populated by aria.extract, consumed by tab.click / tab.type / tab.select.
  * The cache is scoped to a single agent task and cleared on tab close.
  */
-const elementCache = new Map<number, { nodes: SimplifiedNode[]; tree: SimplifiedNode }>();
+const elementCache = new Map<number, { nodes: SimplifiedNode[]; tree: SimplifiedNode; url?: string }>();
 
-export function cacheElements(tabId: number, tree: SimplifiedNode): void {
+export function cacheElements(tabId: number, tree: SimplifiedNode, url?: string): void {
   const flat: SimplifiedNode[] = [];
   function walk(n: SimplifiedNode) {
     if (n.i !== undefined) flat.push(n);
     if (n.children) n.children.forEach(walk);
   }
   walk(tree);
-  elementCache.set(tabId, { nodes: flat, tree });
+  elementCache.set(tabId, { nodes: flat, tree, url });
   // Cap cache at 10 entries to avoid unbounded growth across many tabs
   if (elementCache.size > 10) {
     const first = elementCache.keys().next().value;
@@ -98,19 +98,30 @@ export function cacheElements(tabId: number, tree: SimplifiedNode): void {
   }
 }
 
-export function getCachedElements(tabId: number): SimplifiedNode[] | undefined {
-  return elementCache.get(tabId)?.nodes;
+/**
+ * A cache entry is stale when it was stamped with a URL and the caller's
+ * current URL differs (the tab navigated since extraction). When either URL
+ * is unknown we cannot prove staleness, so we serve the entry (back-compat).
+ */
+function isStale(entry: { url?: string } | undefined, currentUrl?: string): boolean {
+  return (
+    entry !== undefined &&
+    entry.url !== undefined &&
+    currentUrl !== undefined &&
+    entry.url !== currentUrl
+  );
 }
 
-export function getCachedBBox(tabId: number, index: number): BBox | undefined {
-  const nodes = elementCache.get(tabId)?.nodes;
-  if (!nodes) return undefined;
-  const node = nodes.find((n) => n.i === index);
-  return node?.bbox;
+export function getCachedBBox(tabId: number, index: number, currentUrl?: string): BBox | undefined {
+  const entry = elementCache.get(tabId);
+  if (!entry || isStale(entry, currentUrl)) return undefined;
+  return entry.nodes.find((n) => n.i === index)?.bbox;
 }
 
-export function getCachedNode(tabId: number, index: number): SimplifiedNode | undefined {
-  return elementCache.get(tabId)?.nodes.find((n) => n.i === index);
+export function getCachedNode(tabId: number, index: number, currentUrl?: string): SimplifiedNode | undefined {
+  const entry = elementCache.get(tabId);
+  if (!entry || isStale(entry, currentUrl)) return undefined;
+  return entry.nodes.find((n) => n.i === index);
 }
 
 export function clearElementCache(tabId: number): void {

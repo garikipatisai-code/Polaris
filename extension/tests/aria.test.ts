@@ -10,7 +10,7 @@
 //   - empty input → null
 //   - BrowserToolError(fatal:true) → registry yields {ok:false, fatal:true}
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { simplifyAxTree } from '../src/agent/tools/browser/aria';
 import type {
@@ -18,7 +18,13 @@ import type {
   AXTree,
   SimplifiedNode,
 } from '../src/agent/tools/browser/aria_types';
-import { ARIA_OUTPUT_CHAR_CAP } from '../src/agent/tools/browser/aria_types';
+import {
+  ARIA_OUTPUT_CHAR_CAP,
+  cacheElements,
+  getCachedBBox,
+  getCachedNode,
+  clearAllCaches,
+} from '../src/agent/tools/browser/aria_types';
 import { BrowserToolError } from '../src/agent/tools/browser/lifecycle';
 import { ToolRegistry, type ToolHandler } from '../src/agent/tools/registry';
 
@@ -446,5 +452,36 @@ describe('simplifyAxTree: backendDOMNodeId propagation (M3.5 — unblocks M4 act
     }
     // And the resulting JSON is under the cap.
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(ARIA_OUTPUT_CHAR_CAP);
+  });
+});
+
+describe('element cache staleness (URL-stamped)', () => {
+  beforeEach(() => clearAllCaches());
+
+  const tree: SimplifiedNode = {
+    role: 'main',
+    children: [{ role: 'button', name: 'Buy', i: 1, bbox: { x: 10, y: 20, width: 100, height: 40 } }],
+  };
+
+  it('returns the bbox when the current URL matches the stamped URL', () => {
+    cacheElements(7, tree, 'https://site.test/a');
+    expect(getCachedBBox(7, 1, 'https://site.test/a')).toEqual({ x: 10, y: 20, width: 100, height: 40 });
+    expect(getCachedNode(7, 1, 'https://site.test/a')?.name).toBe('Buy');
+  });
+
+  it('MISSES when the current URL differs (page navigated)', () => {
+    cacheElements(7, tree, 'https://site.test/a');
+    expect(getCachedBBox(7, 1, 'https://site.test/b')).toBeUndefined();
+    expect(getCachedNode(7, 1, 'https://site.test/b')).toBeUndefined();
+  });
+
+  it('returns the bbox when currentUrl is omitted (back-compat)', () => {
+    cacheElements(7, tree, 'https://site.test/a');
+    expect(getCachedBBox(7, 1)).toEqual({ x: 10, y: 20, width: 100, height: 40 });
+  });
+
+  it('never misses when no URL was stamped (cacheElements called without url)', () => {
+    cacheElements(8, tree);
+    expect(getCachedBBox(8, 1, 'https://anything.test/x')).toEqual({ x: 10, y: 20, width: 100, height: 40 });
   });
 });
