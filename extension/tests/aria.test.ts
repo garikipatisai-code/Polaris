@@ -533,6 +533,32 @@ describe('aria.extract tab-not-found hint', () => {
   });
 });
 
+describe('simplifyAxTree respects an explicit maxChars cap', () => {
+  function bigTree(): AXTree {
+    return {
+      nodes: [
+        { nodeId: 'root', role: { value: 'main' }, name: { value: 'page' }, childIds: Array.from({ length: 600 }, (_, i) => `c${i}`) },
+        ...Array.from({ length: 600 }, (_, i) => ({
+          nodeId: `c${i}`, parentId: 'root', role: { value: 'button' },
+          name: { value: `button-${i.toString().padStart(4, '0')}` },
+        })) as AXNode[],
+      ],
+    };
+  }
+
+  it('a maxChars larger than the whole tree returns it untrimmed; the default (8000) trims it smaller', () => {
+    // The full serialization of 600 buttons is well over 8000 chars but under 100000.
+    const huge = simplifyAxTree(bigTree(), undefined, 100000);
+    const dflt = simplifyAxTree(bigTree(), undefined); // default ARIA_OUTPUT_CHAR_CAP (8000)
+    const hugeStr = JSON.stringify(huge);
+    const dfltStr = JSON.stringify(dflt);
+    // Huge cap keeps the entire tree — the last button survives.
+    expect(hugeStr).toContain('button-0599');
+    // Default cap trims, producing a strictly smaller serialization.
+    expect(dfltStr.length).toBeLessThan(hugeStr.length);
+  });
+});
+
 describe('aria.extract stamps the tab URL into the cache', () => {
   let originalChrome: unknown;
   beforeEach(() => {

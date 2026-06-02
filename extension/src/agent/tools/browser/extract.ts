@@ -46,14 +46,14 @@ export function createExtractTool(opts: ExtractToolOptions): ToolHandler<
       required: ['tabId', 'question'],
     },
     execute: async (args) => {
-      const tree = await freshAriaTree(args.tabId);
+      const tree = await freshAriaTree(args.tabId, 16000);
       const pageDescription = JSON.stringify(tree ?? '');
 
       const response = await opts.client.chatOnce({
         model: opts.model,
         messages: [
           { role: 'system', content: 'You extract structured information from web page data. Answer the user\'s question based ONLY on the page content provided. If the information is not visible, say so.' },
-          { role: 'user', content: `Page content:\n${pageDescription.slice(0, 8000)}\n\nQuestion: ${args.question}` },
+          { role: 'user', content: `Page content:\n${pageDescription.slice(0, 16000)}\n\nQuestion: ${args.question}` },
         ],
         timeoutMs: 30_000,
         think: false,

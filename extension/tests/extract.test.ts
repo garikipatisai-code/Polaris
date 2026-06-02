@@ -44,7 +44,7 @@ describe('page.extract: always fresh, never cached', () => {
     );
 
     // Fresh extraction must have been used.
-    expect(freshAriaTree).toHaveBeenCalledWith(42);
+    expect(freshAriaTree).toHaveBeenCalledWith(42, 16000);
     // The page content sent to the model is the FRESH tree, not the stale cache.
     const userMsg = captured!.messages[1]!.content;
     expect(userMsg).toContain('FRESH results page');
@@ -62,8 +62,17 @@ describe('page.extract: always fresh, never cached', () => {
       { tabId: 99, question: 'List products' },
       { taskId: 't', stepId: null },
     );
-    expect(freshAriaTree).toHaveBeenCalledWith(99);
+    expect(freshAriaTree).toHaveBeenCalledWith(99, 16000);
     expect(typeof out.answer).toBe('string');
     expect(out.answer.length).toBeGreaterThan(0);
+  });
+});
+
+describe('page.extract requests a larger extraction cap', () => {
+  it('calls freshAriaTree with maxChars=16000', async () => {
+    const fakeClient = { chatOnce: vi.fn(async () => ({ message: { content: 'ok' } })) };
+    const tool = createExtractTool({ client: fakeClient as never, model: 'm' });
+    await tool.execute({ tabId: 7, question: 'list products' }, { taskId: 't', stepId: null });
+    expect(freshAriaTree).toHaveBeenCalledWith(7, 16000);
   });
 });

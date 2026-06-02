@@ -70,7 +70,7 @@ const TRUNCATION_MARKER: SimplifiedNode = {
  *
  * Returns null when the input has no nodes or no discoverable root.
  */
-export function simplifyAxTree(tree: AXTree, viewport?: { width: number; height: number }): SimplifiedNode | null {
+export function simplifyAxTree(tree: AXTree, viewport?: { width: number; height: number }, maxChars: number = ARIA_OUTPUT_CHAR_CAP): SimplifiedNode | null {
   if (!tree.nodes || tree.nodes.length === 0) return null;
 
   const byId = new Map<string, AXNode>();
@@ -141,7 +141,7 @@ export function simplifyAxTree(tree: AXTree, viewport?: { width: number; height:
     });
   }
 
-  result = applyTokenCap(result);
+  result = applyTokenCap(result, maxChars);
   return result;
 }
 
@@ -257,8 +257,8 @@ function collapseWrapperChain(node: SimplifiedNode): SimplifiedNode {
  * still doesn't fit, truncates the outermost children array and appends a
  * synthetic note so the model knows the tree was abridged.
  */
-function applyTokenCap(root: SimplifiedNode): SimplifiedNode {
-  if (JSON.stringify(root).length <= ARIA_OUTPUT_CHAR_CAP) return root;
+function applyTokenCap(root: SimplifiedNode, maxChars: number = ARIA_OUTPUT_CHAR_CAP): SimplifiedNode {
+  if (JSON.stringify(root).length <= maxChars) return root;
 
   // Deep-clone so we don't mutate caller-visible state during trimming.
   const working = cloneNode(root);
@@ -266,7 +266,7 @@ function applyTokenCap(root: SimplifiedNode): SimplifiedNode {
     const depth = computeMaxDepth(working);
     if (depth === 0) break; // root has no children left to trim
     pruneLeavesAtDepth(working, depth);
-    if (JSON.stringify(working).length <= ARIA_OUTPUT_CHAR_CAP) return working;
+    if (JSON.stringify(working).length <= maxChars) return working;
   }
 
   // Fallback: chop the outermost children array down and append the
@@ -280,7 +280,7 @@ function applyTokenCap(root: SimplifiedNode): SimplifiedNode {
       ...trimmed,
       children: [...originalChildren.slice(0, kept + 1), TRUNCATION_MARKER],
     };
-    if (JSON.stringify(candidate).length > ARIA_OUTPUT_CHAR_CAP) break;
+    if (JSON.stringify(candidate).length > maxChars) break;
     kept++;
   }
   trimmed.children = [...originalChildren.slice(0, kept), TRUNCATION_MARKER];
@@ -377,7 +377,7 @@ type AriaExtractOutput = z.infer<typeof AriaExtractOutputSchema>;
  *   - attach/enable/detach errors                → fatal:false
  *   - getFullAXTree throwing                     → fatal:false
  */
-async function runExtraction(tabId: number): Promise<AriaExtractOutput> {
+async function runExtraction(tabId: number, maxChars?: number): Promise<AriaExtractOutput> {
   const debuggerApi = (
     globalThis as unknown as {
       chrome?: { debugger?: typeof chrome.debugger };
@@ -411,7 +411,7 @@ async function runExtraction(tabId: number): Promise<AriaExtractOutput> {
       debuggerApi.sendCommand(target, 'Accessibility.getFullAXTree', undefined, cb),
     );
     const axTree = coerceAXTree(raw);
-    const simplified = simplifyAxTree(axTree, viewportWidth > 0 ? { width: viewportWidth, height: viewportHeight } : undefined);
+    const simplified = simplifyAxTree(axTree, viewportWidth > 0 ? { width: viewportWidth, height: viewportHeight } : undefined, maxChars);
     if (simplified) {
       // Stamp the source URL so cached bounding boxes / nodes are invalidated
       // when the tab later navigates (e.g. after a search submit). Best-effort:
@@ -478,8 +478,8 @@ function coerceAXTree(raw: unknown): AXTree {
  * simplified tree (or null). Always hits the live DOM, so callers never serve
  * stale cached data after a navigation.
  */
-export async function freshAriaTree(tabId: number): Promise<SimplifiedNode | null> {
-  const { tree } = await withBrowserTimeout(() => runExtraction(tabId), 30_000, 'aria.extract');
+export async function freshAriaTree(tabId: number, maxChars?: number): Promise<SimplifiedNode | null> {
+  const { tree } = await withBrowserTimeout(() => runExtraction(tabId, maxChars), 30_000, 'aria.extract');
   return tree;
 }
 
