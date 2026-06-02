@@ -486,6 +486,53 @@ describe('element cache staleness (URL-stamped)', () => {
   });
 });
 
+describe('aria.extract tab-not-found hint', () => {
+  let originalChrome: unknown;
+  beforeEach(() => { originalChrome = (globalThis as { chrome?: unknown }).chrome; });
+  afterEach(() => { (globalThis as { chrome?: unknown }).chrome = originalChrome; });
+
+  it('suggests tab.list() when the tab id does not exist', async () => {
+    // aria.ts wraps CDP in callDebugger((cb) => debuggerApi.attach(target, ver, cb)).
+    // A SYNCHRONOUS throw inside attach rejects callDebugger's promise — this
+    // simulates chrome.debugger.attach failing on a non-existent tab. (An async
+    // mock that never invokes the callback would hang the test.)
+    (globalThis as { chrome?: unknown }).chrome = {
+      ...(globalThis as { chrome?: Record<string, unknown> }).chrome,
+      tabs: { get: vi.fn(async () => ({ url: '' })) },
+      debugger: {
+        attach: vi.fn(() => { throw new Error('No tab with given id 1'); }),
+        detach: vi.fn(),
+        sendCommand: vi.fn(),
+      },
+      runtime: { lastError: null },
+    };
+    await expect(ariaExtractTool.execute({ tabId: 1 }, { taskId: 't', stepId: null }))
+      .rejects.toThrow(/tab\.list\(\)/);
+  });
+
+  it('does NOT add the tab.list hint for an unrelated extraction error', async () => {
+    (globalThis as { chrome?: unknown }).chrome = {
+      ...(globalThis as { chrome?: Record<string, unknown> }).chrome,
+      tabs: { get: vi.fn(async () => ({ url: '' })) },
+      debugger: {
+        attach: vi.fn(() => { throw new Error('Cannot attach: permission denied'); }),
+        detach: vi.fn(),
+        sendCommand: vi.fn(),
+      },
+      runtime: { lastError: null },
+    };
+    let caught: Error | null = null;
+    try {
+      await ariaExtractTool.execute({ tabId: 2 }, { taskId: 't', stepId: null });
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toContain('permission denied');
+    expect(caught!.message).not.toContain('tab.list()');
+  });
+});
+
 describe('aria.extract stamps the tab URL into the cache', () => {
   let originalChrome: unknown;
   beforeEach(() => {

@@ -112,7 +112,7 @@ export const tabClickTool: ToolHandler<
       try {
         tab = await chrome.tabs.get(args.tabId);
       } catch (e) {
-        return { action: 'click' as const, x: 0, y: 0, ok: false, error: `tab.click: tab ${args.tabId} not found: ${(e as Error).message}` };
+        return { action: 'click' as const, x: 0, y: 0, ok: false, error: `tab.click: tab ${args.tabId} not found — call tab.list() to discover active tabs: ${(e as Error).message}` };
       }
       const url = tab.url ?? '';
       await assertCanAct(url, 'click-only');

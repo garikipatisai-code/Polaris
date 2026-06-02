@@ -428,10 +428,9 @@ async function runExtraction(tabId: number): Promise<AriaExtractOutput> {
     return { tree: simplified };
   } catch (e) {
     if (e instanceof BrowserToolError) throw e;
-    throw new BrowserToolError(
-      `aria.extract failed: ${(e as Error).message}`,
-      { fatal: false },
-    );
+    const msg = (e as Error).message;
+    const hint = /no tab with given id/i.test(msg) ? ' — call tab.list() to discover active tabs' : '';
+    throw new BrowserToolError(`aria.extract failed: ${msg}${hint}`, { fatal: false });
   } finally {
     if (attached) {
       try {

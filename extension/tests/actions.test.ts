@@ -344,6 +344,15 @@ describe('tab.select', () => {
   });
 });
 
+describe('tab.click tab-not-found hint', () => {
+  it('suggests tab.list() when chrome.tabs.get rejects', async () => {
+    mockTabsGet.mockRejectedValue(new Error('No tab with given id 1'));
+    const result = await tabClickTool.execute({ tabId: 1, backendDOMNodeId: 7 }, { taskId: 't1', stepId: null });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/tab\.list\(\)/);
+  });
+});
+
 describe('index actions respect cache staleness after navigation', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
