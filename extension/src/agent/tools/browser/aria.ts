@@ -413,8 +413,17 @@ async function runExtraction(tabId: number): Promise<AriaExtractOutput> {
     const axTree = coerceAXTree(raw);
     const simplified = simplifyAxTree(axTree, viewportWidth > 0 ? { width: viewportWidth, height: viewportHeight } : undefined);
     if (simplified) {
+      // Stamp the source URL so cached bounding boxes / nodes are invalidated
+      // when the tab later navigates (e.g. after a search submit). Best-effort:
+      // an unreadable URL stays undefined (then reads never claim staleness).
+      let url: string | undefined;
+      try {
+        const tab = await (globalThis as unknown as { chrome?: { tabs?: { get?: (id: number) => Promise<{ url?: string }> } } })
+          .chrome?.tabs?.get?.(tabId);
+        url = tab?.url;
+      } catch { /* best-effort */ }
       const { cacheElements } = await import('./aria_types');
-      cacheElements(tabId, simplified);
+      cacheElements(tabId, simplified, url);
     }
     return { tree: simplified };
   } catch (e) {

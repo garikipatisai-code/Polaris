@@ -10,9 +10,9 @@
 //   - empty input → null
 //   - BrowserToolError(fatal:true) → registry yields {ok:false, fatal:true}
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { simplifyAxTree } from '../src/agent/tools/browser/aria';
+import { simplifyAxTree, ariaExtractTool } from '../src/agent/tools/browser/aria';
 import type {
   AXNode,
   AXTree,
@@ -483,5 +483,51 @@ describe('element cache staleness (URL-stamped)', () => {
   it('never misses when no URL was stamped (cacheElements called without url)', () => {
     cacheElements(8, tree);
     expect(getCachedBBox(8, 1, 'https://anything.test/x')).toEqual({ x: 10, y: 20, width: 100, height: 40 });
+  });
+});
+
+describe('aria.extract stamps the tab URL into the cache', () => {
+  let originalChrome: unknown;
+  beforeEach(() => {
+    clearAllCaches();
+    originalChrome = (globalThis as { chrome?: unknown }).chrome;
+    // callDebugger in aria.ts calls debuggerApi.attach(target, version, cb) —
+    // the callback pattern, not a Promise. The mock must invoke the callback.
+    const sendCommand = vi.fn((_t: unknown, method: string, _params: unknown, cb: (r: unknown) => void) => {
+      if (method === 'Accessibility.getFullAXTree') {
+        cb({
+          nodes: [
+            { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: '' }, childIds: ['2'] },
+            {
+              nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'Buy' },
+              backendDOMNodeId: 99,
+              bounds: { value: [{ x: 10, y: 20 }, { x: 110, y: 20 }, { x: 110, y: 60 }, { x: 10, y: 60 }] },
+            },
+          ],
+        });
+      } else {
+        cb({});
+      }
+    });
+    (globalThis as { chrome?: unknown }).chrome = {
+      ...(globalThis as { chrome?: Record<string, unknown> }).chrome,
+      tabs: { get: vi.fn(async (id: number) => ({ id, url: 'https://shop.test/page-A', title: 'A' })) },
+      debugger: {
+        attach: vi.fn((_t: unknown, _v: unknown, cb: () => void) => { cb(); }),
+        detach: vi.fn((_t: unknown, cb: () => void) => { cb(); }),
+        sendCommand,
+      },
+      runtime: { lastError: null },
+    };
+  });
+  afterEach(() => { (globalThis as { chrome?: unknown }).chrome = originalChrome; });
+
+  it('caches the bbox under the extracted URL so a same-URL lookup hits and a different-URL lookup misses', async () => {
+    const out = await ariaExtractTool.execute({ tabId: 55 }, { taskId: 't', stepId: null });
+    expect(out.tree).not.toBeNull();
+    // Same URL → hit (proves cacheElements got the URL).
+    expect(getCachedBBox(55, 1, 'https://shop.test/page-A')).toEqual({ x: 10, y: 20, width: 100, height: 40 });
+    // Different URL → stale miss.
+    expect(getCachedBBox(55, 1, 'https://shop.test/page-B')).toBeUndefined();
   });
 });
