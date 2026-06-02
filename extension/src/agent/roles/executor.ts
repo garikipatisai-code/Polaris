@@ -18,6 +18,7 @@ import * as store from '../state_store';
 import { executorSystemPrompt, executorRetryNudge } from '../prompts/executor';
 import { approxTokens, truncateForReplay } from '../budget';
 import { log } from '../log';
+import { getOwnedTabsDetailed } from '../tools';
 
 export interface ExecutorInput {
   state: AgentStateHot;
@@ -51,8 +52,11 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
 
   const toolDefs = registry.toToolDefs();
   const toolNames = registry.names();
-  const scratchTail = await store.readScratchTail(state.taskId, 5);
-  const relevantFindings = await store.findingsByRecency(state.taskId, 5);
+  const [scratchTail, relevantFindings, openTabs] = await Promise.all([
+    store.readScratchTail(state.taskId, 5),
+    store.findingsByRecency(state.taskId, 5),
+    getOwnedTabsDetailed(state.taskId),
+  ]);
 
   const systemPrompt = executorSystemPrompt({
     goal: state.goal.text,
@@ -61,6 +65,7 @@ export async function runExecutor(input: ExecutorInput): Promise<ExecutorOutput>
     relevantFindings,
     scratchTail,
     availableToolNames: toolNames,
+    openTabs,
   });
 
   // Budget guard: if the prompt alone exceeds the executor budget, abort

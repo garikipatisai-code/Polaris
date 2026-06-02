@@ -64,6 +64,7 @@ export {
   tabScreenshotTool,
   tabWaitLoadedTool,
   getOwnedTabs,
+  getOwnedTabsDetailed,
   closeOwnedTabs,
 } from './browser/tab';
 export { findAdapter, extractProduct } from './retailers';
