@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tabClickTool, tabTypeTool, tabSelectTool } from '../src/agent/tools/browser/actions';
 import { setDomainTier } from '../src/agent/domain_tiers';
 import { resetMockedStorage } from './setup';
+import { cacheElements, clearAllCaches } from '../src/agent/tools/browser/aria_types';
 
 const mockSendCommand = vi.fn();
 const mockAttach = vi.fn().mockResolvedValue(undefined);
@@ -340,5 +341,51 @@ describe('tab.select', () => {
 
   it('has correct name', () => {
     expect(tabSelectTool.name).toBe('tab.select');
+  });
+});
+
+describe('index actions respect cache staleness after navigation', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await resetMockedStorage();
+    clearAllCaches();
+    await setDomainTier('example.com', 'full-action');
+    // aria.extract ran on page-1 and cached an element bbox stamped with that URL.
+    cacheElements(42, {
+      role: 'main',
+      children: [{ role: 'button', name: 'Add', i: 1, bbox: { x: 10, y: 20, width: 100, height: 40 } }],
+    }, 'https://example.com/page-1');
+    mockSendCommand.mockResolvedValue({});
+    (globalThis as unknown as { chrome: Record<string, unknown> }).chrome = {
+      ...(globalThis as unknown as { chrome: Record<string, unknown> }).chrome,
+      tabs: { get: mockTabsGet },
+      debugger: { attach: mockAttach, detach: mockDetach, sendCommand: mockSendCommand },
+    };
+  });
+
+  it('tab.click by index returns a stale error once the tab has navigated', async () => {
+    // Tab is now on page-2 — the cached page-1 bbox must NOT be used.
+    mockTabsGet.mockResolvedValue({ id: 42, url: 'https://example.com/page-2' });
+    const result = await tabClickTool.execute({ tabId: 42, index: 1 }, { taskId: 't1', stepId: null });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/stale|aria\.extract/i);
+    // No mouse event dispatched against the wrong coordinates.
+    const mouse = mockSendCommand.mock.calls.filter((c: unknown[]) => (c as [unknown, string])[1] === 'Input.dispatchMouseEvent');
+    expect(mouse.length).toBe(0);
+  });
+
+  it('tab.click by index still works when the URL is unchanged', async () => {
+    mockTabsGet.mockResolvedValue({ id: 42, url: 'https://example.com/page-1' });
+    const result = await tabClickTool.execute({ tabId: 42, index: 1 }, { taskId: 't1', stepId: null });
+    expect(result.ok).toBe(true);
+    expect(result.x).toBe(60); // center of 10..110
+    expect(result.y).toBe(40); // center of 20..60
+  });
+
+  it('tab.type by index returns a stale error after navigation', async () => {
+    mockTabsGet.mockResolvedValue({ id: 42, url: 'https://example.com/page-2' });
+    const result = await tabTypeTool.execute({ tabId: 42, index: 1, text: 'hi' }, { taskId: 't1', stepId: null });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/stale|aria\.extract/i);
   });
 });

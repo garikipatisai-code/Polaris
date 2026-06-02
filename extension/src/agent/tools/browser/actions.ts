@@ -119,9 +119,9 @@ export const tabClickTool: ToolHandler<
 
       // Path 1: index-based — use cached bounding box directly (no DOM resolution)
       if (args.index !== undefined) {
-        const bbox = getCachedBBox(args.tabId, args.index);
+        const bbox = getCachedBBox(args.tabId, args.index, url);
         if (!bbox) {
-          return { action: 'click' as const, x: 0, y: 0, ok: false, error: `element [${args.index}] not in cache — call aria.extract first` };
+          return { action: 'click' as const, x: 0, y: 0, ok: false, error: `element [${args.index}] is stale or not cached (the page may have changed) — call aria.extract again` };
         }
         const cx = Math.round(bbox.x + bbox.width / 2);
         const cy = Math.round(bbox.y + bbox.height / 2);
@@ -246,9 +246,9 @@ export const tabTypeTool: ToolHandler<z.infer<typeof tabTypeArgs>, z.infer<typeo
 
       // Path 1: index-based — focus by clicking cached bbox, then type
       if (args.index !== undefined) {
-        const bbox = getCachedBBox(args.tabId, args.index);
+        const bbox = getCachedBBox(args.tabId, args.index, tab.url ?? '');
         if (!bbox) {
-          return { action: 'type' as const, charsTyped: 0, submitted: false, ok: false, error: `element [${args.index}] not in cache — call aria.extract first` };
+          return { action: 'type' as const, charsTyped: 0, submitted: false, ok: false, error: `element [${args.index}] is stale or not cached (the page may have changed) — call aria.extract again` };
         }
         const cx = Math.round(bbox.x + bbox.width / 2);
         const cy = Math.round(bbox.y + bbox.height / 2);
