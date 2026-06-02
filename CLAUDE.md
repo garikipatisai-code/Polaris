@@ -90,9 +90,10 @@ in "Open questions" first.
 
 ## Current state — UPDATE THIS WHEN YOU FINISH WORK
 
-**Last touched:** 2026-05-31 (Mac, Opus 4.8 — Hybrid Delta wiring merged to main)
+**Last touched:** 2026-06-01 (Mac, Opus 4.8 1M — agent-loop extraction fixes via subagent-driven TDD)
+**In progress (branch `fix/agent-loop-extraction`, NOT yet merged/pushed):** **Agent-loop extraction fixes** — closes the 2026-06-01 Amazon post-mortem (`docs/post-mortem-2026-06-01-agent-loop-amazon.md`). 11 TDD commits in 3 streams: **(A) cache staleness** — element cache URL-stamped (`cacheElements(tabId,tree,url)`), `getCachedBBox/Node` miss on URL mismatch, `aria.extract` stamps the URL, `tab.click/type` pass the current URL, and `page.extract` ALWAYS re-extracts (never serves the cache) — fixes RC#1 (post-search-navigation served the stale homepage tree → "no products") + the broader index-click/type staleness the post-mortem missed. **(B) durable tab context** — Executor prompt gains an `OPEN TABS` section fed by `getOwnedTabsDetailed` every turn so the tabId survives compaction (fixes RC#2 hallucinated `tabId:1`); tab-not-found errors hint `tab.list()`; `search.navigate` now registers tab ownership. **(C) dynamic content** — new `tab.dom_settle` tool (MutationObserver idle-wait, prompted before extraction); ARIA cap made configurable, `page.extract` extracts at 16000 chars. **428 mock tests + 2 fast-tier passing; build clean.** Spec/plan: `docs/superpowers/{specs,plans}/2026-06-01-agent-loop-extraction-fixes*`. **Convention #5 (vision = verification-only) intentionally NOT changed** — the post-mortem's vision-as-extraction idea was rejected as a convention violation. **Linux gate (NOT yet run): the real Amazon agent run + `tab.dom_settle` quiet-window / 16000-cap tuning — the Mac sandbox blocks web egress, so settle SEMANTICS and the Amazon-dynamic-content fix are unverified.**
 **Last shipped:** **Hybrid Delta WIRING — COMPLETE + merged to `main` (`1a96e4a`, 24 commits).** The 2026-05-29 wave shipped cloud/PII/SoM as unwired (and partly broken) scaffolding; this made it real: all-local 3-tier model routing (Planner+Evaluator→`qwen3.6:35b-a3b`, Executor+Compactor→`qwen3.5:4b`; cloud BYOK opt-in/off-by-default) wired end-to-end via `buildProviders` + the `driveChatOnce` choke point; the double-broken cloud executor fixed (tools forwarded + tool_calls normalized); PII anonymize→deanonymize sandwich on cloud egress; page-action CDP path hardened; docs reconciled. **399 mock tests + 2 fast-tier integration passing; build clean.** **Validated end-to-end on real hardware — `scripts/browser_smoke_hybrid.py` → 6/6 PASS on the Linux P2200 (Chrome 148): page actions (type/click/select) mutate a live page + DeepSeek cloud round-trip works** (commit `3a81602`). Pushed + synced (`main == origin/main`).
-**Current branch:** main (contains the merged wiring — **24 commits ahead of origin/main; push pending** since this Mac's sandbox blocks GitHub)
+**Current branch:** `fix/agent-loop-extraction` (13 commits ahead of `main` — 2 docs + 11 TDD code; not yet merged or pushed). Note: `main` itself is still **24 commits ahead of origin/main; push pending** (Hybrid Delta — this Mac's sandbox blocks GitHub).
 
 - `probe.py` — capability probe verified on Linux box (38 tok/s, needle@128K passes, vision works ≥1200 px)
 - `extension/` — full agent stack:
@@ -304,6 +305,24 @@ to decide budgets, not the 262 K theoretical context.
 
 ## Recent decisions (append at top — most recent first)
 
+- **2026-06-01** Agent-loop extraction fixes (branch `fix/agent-loop-extraction`,
+  not yet merged). Root-caused the Amazon post-mortem rather than applying its
+  literal patches. Key calls: (1) **cache invalidation via URL-stamping**, not
+  event-driven `chrome.tabs.onUpdated` clearing — URL-compare also catches SPA
+  soft-nav and is read-side-free (the action tools already hold `tab.url`).
+  (2) **RC#2 is a context problem, not a bad error message** — the real fix is
+  surfacing owned tabs durably in the Executor prompt (`OPEN TABS`), because the
+  tabId was only living in the 5-entry/80-char scratch tail that compaction
+  wipes; the `tab.list()` error hint is a secondary recovery aid. (3) **Convention
+  #5 held** — rejected the post-mortem's "use vision when ARIA fails" because it
+  violates vision=verification-only; bet on making ARIA reliable (dom_settle +
+  bigger cap) instead. (4) **`page.extract` never reads the element cache** — the
+  cache exists for index click/type bbox lookups; page.extract always
+  re-extracts. (5) Corrected the post-mortem's claim that `simplifyAxTree` drops
+  product content — it preserves named nodes; the real RC#3 risks are the
+  lazy-load race (→ `tab.dom_settle`) and the 8000-char cap (→ 16000 for
+  page.extract). 16000 is a reasoned default, **Linux-tunable**.
+
 - **2026-05-31** Model-distribution locked all-local (cloud opt-in): Planner +
   Evaluator → `qwen3.6:35b-a3b`; Executor + Compactor → `qwen3.5:4b`. Both
   models resident simultaneously (4B=VRAM, 35B=CPU/RAM, ~0.2 s role-switch).
@@ -395,6 +414,17 @@ to decide budgets, not the 262 K theoretical context.
 3. The wiring spec + plan are `docs/superpowers/specs/2026-05-30-hybrid-delta-wiring-design.md`
    and `docs/superpowers/plans/2026-05-31-hybrid-delta-wiring.md`. The model-
    distribution decision + Linux verification are in `extension/docs/model-distribution-verification.md`.
+4. **Current branch `fix/agent-loop-extraction` (NOT merged) — the live work:**
+   agent-loop extraction fixes (cache URL-stamp; durable `OPEN TABS`;
+   `tab.dom_settle`; `page.extract` always-fresh @ 16000 chars). 428 mock tests
+   green, build clean, final whole-implementation review passed. Spec/plan:
+   `docs/superpowers/{specs,plans}/2026-06-01-agent-loop-extraction-fixes*`.
+   **THE GATE before merge: run the real Amazon agent run on the Linux box**
+   (Mac sandbox blocks web egress) — *"Go to amazon.com, search 'wireless
+   mouse', list the first 3 names + prices"* with `amazon.com` set to
+   `full-action` in settings; confirm products extract, then tune
+   `tab.dom_settle` quiet-window + the 16000 cap. Settle SEMANTICS are unverified
+   on Mac.
 
 **Both prior open items are DONE:**
 1. ✅ **Pushed** — `main == origin/main` @ `3a81602`. (Stale `origin/feat/hybrid-delta-wiring`@338c74b can still be deleted if you want tidiness.)
@@ -404,7 +434,7 @@ to decide budgets, not the 262 K theoretical context.
 follow-ups: `resetAnonymizeCounters()` isn't called in prod (cosmetic);
 `CloudClient.chatStream` isn't timeout-hardened (off the agent path).
 
-- Test suite baseline: `cd extension && npm test` → **399 tests**.
+- Test suite baseline: `cd extension && npm test` → **399 tests** on `main`; **428 tests** on `fix/agent-loop-extraction` (+29: A1-A4 cache, B1-B5 tab-context, C1-C2 dom-settle/cap).
 
 **Before you sign off, update:**
 - `## Current state` with what you changed

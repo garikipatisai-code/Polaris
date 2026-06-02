@@ -23,10 +23,11 @@
 //
 // After simplification the tree is run through a token-cap pass. Models
 // don't gracefully degrade past their context budget — they hallucinate
-// or stall. We bound the serialized output at `ARIA_OUTPUT_CHAR_CAP` by
-// trimming deepest leaves; if 10 passes don't suffice the outermost
-// children are truncated and a synthetic `note` marker is appended so the
-// model knows the tree was abridged.
+// or stall. We bound the serialized output at `maxChars` (default
+// `ARIA_OUTPUT_CHAR_CAP`; page.extract requests a larger value) by trimming
+// deepest leaves; if 10 passes don't suffice the outermost children are
+// truncated and a synthetic `note` marker is appended so the model knows
+// the tree was abridged.
 //
 // `ariaExtractTool` wraps the parser as a registry-compatible tool. The
 // chrome.debugger lifecycle (attach → enable → fetch → detach) is wrapped
@@ -252,10 +253,10 @@ function collapseWrapperChain(node: SimplifiedNode): SimplifiedNode {
 }
 
 /**
- * Bound the serialized tree to ARIA_OUTPUT_CHAR_CAP. First tries up to
- * MAX_TRIM_PASSES of "remove all leaves at the current max depth"; if that
- * still doesn't fit, truncates the outermost children array and appends a
- * synthetic note so the model knows the tree was abridged.
+ * Bound the serialized tree to `maxChars` (default ARIA_OUTPUT_CHAR_CAP).
+ * First tries up to MAX_TRIM_PASSES of "remove all leaves at the current max
+ * depth"; if that still doesn't fit, truncates the outermost children array
+ * and appends a synthetic note so the model knows the tree was abridged.
  */
 function applyTokenCap(root: SimplifiedNode, maxChars: number = ARIA_OUTPUT_CHAR_CAP): SimplifiedNode {
   if (JSON.stringify(root).length <= maxChars) return root;
