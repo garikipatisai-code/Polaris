@@ -21,6 +21,7 @@
 import { z } from 'zod';
 import type { ToolHandler } from '../registry';
 import { BrowserToolError, withBrowserTimeout } from './lifecycle';
+import { registerOwnedTab } from './tab';
 
 const DDG_HTML_ENDPOINT = 'https://html.duckduckgo.com/html/';
 const DEFAULT_LIMIT = 10;
@@ -339,7 +340,7 @@ export const searchNavigateTool: ToolHandler<
     },
     required: ['query'],
   },
-  execute: async (args) => {
+  execute: async (args, ctx) => {
     // 1. Search
     const url = new URL(DDG_HTML_ENDPOINT);
     url.searchParams.set('q', args.query);
@@ -362,6 +363,7 @@ export const searchNavigateTool: ToolHandler<
     if (typeof tab.id !== 'number') {
       throw new BrowserToolError('search.navigate: tab was not created', { fatal: true });
     }
+    await registerOwnedTab(ctx.taskId, tab.id);
     return { tabId: tab.id, title, url: targetUrl };
   },
 };

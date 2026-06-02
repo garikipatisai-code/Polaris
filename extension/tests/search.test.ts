@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseDuckDuckGoResults,
   searchTool,
+  searchNavigateTool,
   type SearchResult,
 } from '../src/agent/tools/browser/search';
+import { getOwnedTabs, _resetOwnership } from '../src/agent/tools/browser/tab';
 
 // ──────────────────────────────────────────────────────────────────────
 // Fixtures (inline strings, kept here for reviewability rather than as
@@ -262,5 +264,35 @@ describe('searchTool.execute (mocked fetch)', () => {
       name: 'BrowserToolError',
       fatal: false,
     });
+  });
+});
+
+describe('search.navigate registers tab ownership', () => {
+  let originalFetch: typeof globalThis.fetch | undefined;
+  let savedChrome: unknown;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    savedChrome = (globalThis as { chrome?: unknown }).chrome;
+    _resetOwnership();
+  });
+  afterEach(() => {
+    if (originalFetch !== undefined) globalThis.fetch = originalFetch;
+    (globalThis as { chrome?: unknown }).chrome = savedChrome;
+    vi.restoreAllMocks();
+  });
+
+  it('adds the opened tab to the task ownership set', async () => {
+    globalThis.fetch = (async () => ({
+      ok: true, status: 200,
+      text: async () => '<a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fhit">Hit</a>',
+    })) as unknown as typeof fetch;
+    (globalThis as { chrome?: Record<string, unknown> }).chrome = {
+      ...(globalThis as { chrome?: Record<string, unknown> }).chrome,
+      tabs: { create: vi.fn(async () => ({ id: 8080, url: 'https://example.com/hit' })) },
+    };
+
+    const out = await searchNavigateTool.execute({ query: 'wireless mouse' }, { taskId: 'tS', stepId: null });
+    expect(out.tabId).toBe(8080);
+    expect(getOwnedTabs('tS')).toContain(8080);
   });
 });

@@ -52,6 +52,12 @@ export function getOwnedTabs(taskId: string): number[] {
   return set ? [...set] : [];
 }
 
+/** Register a tab id as owned by a task. Used by tools that create tabs
+ *  outside tab.open (e.g. search.navigate) so the tab is listed + auto-closed. */
+export async function registerOwnedTab(taskId: string, tabId: number): Promise<void> {
+  await addOwned(taskId, tabId);
+}
+
 /**
  * Close every tab owned by `taskId`. Called by the orchestrator at terminal
  * phase. Reads from in-memory cache; if empty (post-SW-restart), falls back
