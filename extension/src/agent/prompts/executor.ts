@@ -86,6 +86,8 @@ RULES:
 - When interacting with a page, call aria.extract first to discover elements
   and their indices. Then use tab.click({tabId, index: N}) or
   tab.type({tabId, index: N, text: "..."}) by index number.
+- After a navigation or search submit, call tab.dom_settle before
+  aria.extract / page.extract so lazy-loaded content has rendered.
 - Don't guess URLs or copy long URLs from search results. Use search.navigate(query)
   to search and open the first result in one step.
 - Reuse existing tabs instead of opening new ones. Call tab.list to

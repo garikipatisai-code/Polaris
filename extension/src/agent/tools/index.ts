@@ -17,6 +17,7 @@ import {
 } from './browser/tab';
 import { productExtractTool } from './retailers/extract_tool';
 import { tabClickTool, tabTypeTool, tabSelectTool } from './browser/actions';
+import { tabDomSettleTool } from './browser/settle';
 
 export function createDefaultRegistry(): ToolRegistry {
   const reg = new ToolRegistry();
@@ -42,6 +43,7 @@ export function createDefaultRegistry(): ToolRegistry {
   reg.register(tabListTool);
   reg.register(tabScreenshotTool);
   reg.register(tabWaitLoadedTool);
+  reg.register(tabDomSettleTool);
   // Retailer integration: bridge ARIA extraction to the adapter framework.
   reg.register(productExtractTool);
   // Page-action tools: CDP-based DOM interaction (click, type, select).
@@ -70,6 +72,7 @@ export {
 export { findAdapter, extractProduct } from './retailers';
 export { productExtractTool } from './retailers/extract_tool';
 export { tabClickTool, tabTypeTool, tabSelectTool } from './browser/actions';
+export { tabDomSettleTool } from './browser/settle';
 export { createVisionGroundTool } from './browser/vision';
 export { createExtractTool } from './browser/extract';
 export { BrowserToolError, withBrowserTimeout } from './browser/lifecycle';
