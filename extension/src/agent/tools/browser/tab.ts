@@ -471,6 +471,36 @@ const tabListOutput = z.object({
   ),
 });
 
+/**
+ * Owned tabs with live url + title (hydrates from hot state post-SW-restart,
+ * drops tabs that have vanished). Single source of truth shared by tab.list
+ * and the Executor prompt's OPEN TABS section. Returns [] when chrome.tabs is
+ * unavailable (e.g. unit tests with no tabs mock).
+ */
+export async function getOwnedTabsDetailed(
+  taskId: string,
+): Promise<{ tabId: number; url: string; title: string }[]> {
+  await hydrateOwnership(taskId);
+  const ids = getOwnedTabs(taskId);
+  if (ids.length === 0) return [];
+  // Guard for test / SW environments where chrome.tabs is absent — never
+  // throw (this runs every Executor turn). Falls back to no tabs listed.
+  if (typeof (globalThis as unknown as { chrome?: { tabs?: unknown } }).chrome?.tabs === 'undefined') {
+    return [];
+  }
+  const out: { tabId: number; url: string; title: string }[] = [];
+  for (const id of ids) {
+    try {
+      const tab = await chromeTabsGet(id);
+      out.push({ tabId: id, url: tab.url ?? '', title: tab.title ?? '' });
+    } catch {
+      // Tab vanished — drop it so the model stops seeing it.
+      await removeOwned(taskId, id);
+    }
+  }
+  return out;
+}
+
 export const tabListTool: ToolHandler<
   z.infer<typeof tabListArgs>,
   z.infer<typeof tabListOutput>
@@ -485,24 +515,7 @@ export const tabListTool: ToolHandler<
     properties: {},
   },
   execute: async (_args, ctx) => {
-    await hydrateOwnership(ctx.taskId);
-    const ids = getOwnedTabs(ctx.taskId);
-    const out: { tabId: number; url: string; title: string }[] = [];
-    for (const id of ids) {
-      try {
-        const tab = await chromeTabsGet(id);
-        out.push({
-          tabId: id,
-          url: tab.url ?? '',
-          title: tab.title ?? '',
-        });
-      } catch {
-        // Tab vanished between our last open and this list — drop it from
-        // the owned set so the model doesn't keep seeing it.
-        await removeOwned(ctx.taskId, id);
-      }
-    }
-    return { ok: true as const, tabs: out };
+    return { ok: true as const, tabs: await getOwnedTabsDetailed(ctx.taskId) };
   },
 };
 

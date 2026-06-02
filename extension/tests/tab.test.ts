@@ -16,6 +16,7 @@ import {
   getOwnedTabs,
   closeOwnedTabs,
   _resetOwnership,
+  getOwnedTabsDetailed,
 } from '../src/agent/tools/browser/tab';
 
 // ──────────────────────────────────────────────────────────────────────
@@ -709,5 +710,34 @@ describe('post-SW-restart ownership recovery (M3.5 follow-up)', () => {
     const r = await tabListTool.execute({}, ctxRestart);
     const ids = r.tabs.map((t) => t.tabId).sort();
     expect(ids).toEqual([7001, 7002]);
+  });
+});
+
+describe('getOwnedTabsDetailed', () => {
+  it('returns {tabId,url,title} for every owned tab', async () => {
+    const ctx = { taskId: 'taskZ', stepId: null };
+    const a = await tabOpenTool.execute({ url: 'https://a.example/1' }, ctx);
+    const b = await tabOpenTool.execute({ url: 'https://b.example/2' }, ctx);
+    const detailed = await getOwnedTabsDetailed('taskZ');
+    const ids = detailed.map((t) => t.tabId).sort();
+    expect(ids).toEqual([a.tabId, b.tabId].sort());
+    for (const t of detailed) {
+      expect(t.url).toMatch(/example/);
+      expect(typeof t.title).toBe('string');
+    }
+  });
+
+  it('returns [] for a task that owns no tabs', async () => {
+    expect(await getOwnedTabsDetailed('nobody')).toEqual([]);
+  });
+
+  it('drops a vanished tab and removes it from ownership', async () => {
+    const ctx = { taskId: 'taskV', stepId: null };
+    const a = await tabOpenTool.execute({ url: 'https://a.example/1' }, ctx);
+    // Simulate the tab disappearing behind our back.
+    mock._state.tabs.delete(a.tabId);
+    const detailed = await getOwnedTabsDetailed('taskV');
+    expect(detailed).toEqual([]);
+    expect(getOwnedTabs('taskV')).not.toContain(a.tabId);
   });
 });
