@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import type { ToolHandler } from '../registry';
 import type { OllamaClient } from '../../../background/ollama';
+import { freshAriaTree } from './aria';
 
 const extractArgs = z.object({
   tabId: z.number().int(),
@@ -45,17 +46,8 @@ export function createExtractTool(opts: ExtractToolOptions): ToolHandler<
       required: ['tabId', 'question'],
     },
     execute: async (args) => {
-      const { getCachedElements } = await import('./aria_types');
-      const cached = getCachedElements(args.tabId);
-
-      let pageDescription: string;
-      if (cached && cached.length > 0) {
-        pageDescription = JSON.stringify(cached.slice(0, 50));
-      } else {
-        const { ariaExtractTool } = await import('./aria');
-        const result = await ariaExtractTool.execute({ tabId: args.tabId }, { taskId: '', stepId: '' });
-        pageDescription = JSON.stringify(result.tree ?? '');
-      }
+      const tree = await freshAriaTree(args.tabId);
+      const pageDescription = JSON.stringify(tree ?? '');
 
       const response = await opts.client.chatOnce({
         model: opts.model,

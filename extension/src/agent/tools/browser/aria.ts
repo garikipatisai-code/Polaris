@@ -464,6 +464,17 @@ function coerceAXTree(raw: unknown): AXTree {
   return { nodes: [] };
 }
 
+/**
+ * Shared fresh-extraction helper used by both aria.extract and page.extract.
+ * Runs runExtraction through the 30s browser timeout and returns just the
+ * simplified tree (or null). Always hits the live DOM, so callers never serve
+ * stale cached data after a navigation.
+ */
+export async function freshAriaTree(tabId: number): Promise<SimplifiedNode | null> {
+  const { tree } = await withBrowserTimeout(() => runExtraction(tabId), 30_000, 'aria.extract');
+  return tree;
+}
+
 export const ariaExtractTool: ToolHandler<AriaExtractArgs, AriaExtractOutput> = {
   name: 'aria.extract',
   description:
@@ -482,6 +493,5 @@ export const ariaExtractTool: ToolHandler<AriaExtractArgs, AriaExtractOutput> = 
     },
     required: ['tabId'],
   },
-  execute: async (args) =>
-    withBrowserTimeout(() => runExtraction(args.tabId), 30_000, 'aria.extract'),
+  execute: async (args) => ({ tree: await freshAriaTree(args.tabId) }),
 };
